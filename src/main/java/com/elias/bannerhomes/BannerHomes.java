@@ -2,9 +2,12 @@ package com.elias.bannerhomes;
 
 import net.md_5.bungee.api.ChatColor;
 import org.bukkit.Bukkit;
+import org.bukkit.DyeColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.block.banner.Pattern;
+import org.bukkit.block.banner.PatternType;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -18,6 +21,7 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BannerMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -34,7 +38,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     private static final String GUI_MAIN_TITLE = ChatColor.DARK_BLUE + "Deine Homes";
     private static final String GUI_BANNER_TITLE = ChatColor.DARK_PURPLE + "Wähle eine Bannerfarbe";
 
-    // Speichert, welcher Spieler gerade für welchen Slot einen Namen im Chat eingeben muss
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
 
     private File dataFile;
@@ -43,11 +46,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     private static class PendingHome {
         final int slotIndex;
         final Material bannerMaterial;
+        final boolean isOminous;
         final Location location;
 
-        PendingHome(int slotIndex, Material bannerMaterial, Location location) {
+        PendingHome(int slotIndex, Material bannerMaterial, boolean isOminous, Location location) {
             this.slotIndex = slotIndex;
             this.bannerMaterial = bannerMaterial;
+            this.isOminous = isOminous;
             this.location = location;
         }
     }
@@ -91,8 +96,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
     }
 
-    // ===== BERECHNUNG DER SLOTS IN DER KISTE =====
-
     private int[] getSlotsForAmount(int amount) {
         switch (amount) {
             case 1:
@@ -106,11 +109,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             case 5:
                 return new int[]{9, 11, 13, 15, 17};
             default:
-                return new int[]{11, 13, 15}; // Fallback: 3 Homes
+                return new int[]{11, 13, 15};
         }
     }
-
-    // ===== MENÜ ÖFFNEN =====
 
     public void openHomeMenu(Player p) {
         Inventory inv = Bukkit.createInventory(null, 27, GUI_MAIN_TITLE);
@@ -129,10 +130,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (dataConfig.contains(path + ".name")) {
                 String name = dataConfig.getString(path + ".name");
                 String matName = dataConfig.getString(path + ".banner");
+                boolean isOminous = dataConfig.getBoolean(path + ".isOminous", false);
+
                 Material mat = Material.matchMaterial(matName != null ? matName : "WHITE_BANNER");
                 if (mat == null) mat = Material.WHITE_BANNER;
 
-                ItemStack banner = new ItemStack(mat);
+                ItemStack banner = isOminous ? createOminousBanner() : new ItemStack(mat);
                 ItemMeta meta = banner.getItemMeta();
                 if (meta != null) {
                     meta.setDisplayName(ChatColor.GREEN + name);
@@ -168,7 +171,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 Material.PINK_BANNER, Material.GRAY_BANNER, Material.LIGHT_GRAY_BANNER,
                 Material.CYAN_BANNER, Material.PURPLE_BANNER, Material.BLUE_BANNER,
                 Material.BROWN_BANNER, Material.GREEN_BANNER, Material.RED_BANNER,
-                Material.BLACK_BANNER, Material.OMINOUS_BANNER
+                Material.BLACK_BANNER
         };
 
         for (Material b : banners) {
@@ -181,10 +184,34 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.addItem(item);
         }
 
+        // Ominous Banner als Extra-Item hinzufügen
+        ItemStack ominous = createOminousBanner();
+        ItemMeta oMeta = ominous.getItemMeta();
+        if (oMeta != null) {
+            oMeta.setDisplayName(ChatColor.GOLD + "Slot-Index:" + slotIndex + " (Ominous)");
+            ominous.setItemMeta(oMeta);
+        }
+        inv.addItem(ominous);
+
         p.openInventory(inv);
     }
 
-    // ===== BEFEHL =====
+    private ItemStack createOminousBanner() {
+        ItemStack item = new ItemStack(Material.WHITE_BANNER);
+        BannerMeta meta = (BannerMeta) item.getItemMeta();
+        if (meta != null) {
+            meta.addPattern(new Pattern(DyeColor.RHOMBUS, PatternType.RHOMBUS_MIDDLE));
+            meta.addPattern(new Pattern(DyeColor.LIGHT_GRAY, PatternType.STRIPE_BOTTOM));
+            meta.addPattern(new Pattern(DyeColor.GRAY, PatternType.CIRCLE_MIDDLE));
+            meta.addPattern(new Pattern(DyeColor.LIGHT_GRAY, PatternType.BORDER));
+            meta.addPattern(new Pattern(DyeColor.BLACK, PatternType.STRIPE_MIDDLE));
+            meta.addPattern(new Pattern(DyeColor.LIGHT_GRAY, PatternType.HALF_HORIZONTAL));
+            meta.addPattern(new Pattern(DyeColor.WHITE, PatternType.CIRCLE_MIDDLE));
+            meta.addPattern(new Pattern(DyeColor.BLACK, PatternType.BORDER));
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -198,8 +225,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
         return true;
     }
-
-    // ===== INVENTAR-KLICK-EVENT =====
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
@@ -219,7 +244,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int maxHomes = getConfig().getInt("max-homes", 3);
         int[] slots = getSlotsForAmount(maxHomes);
 
-        // 1. Klick im Hauptmenü
         if (title.equals(GUI_MAIN_TITLE)) {
             int clickedSlot = event.getSlot();
             int homeIndex = -1;
@@ -236,12 +260,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             String path = "homes." + p.getUniqueId().toString() + "." + homeIndex;
 
             if (current.getType() == Material.COMPASS) {
-                // Neuer Homepoint -> Banner-Auswahl öffnen
                 p.closeInventory();
                 openBannerSelectMenu(p, homeIndex);
                 p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
             } else if (current.getType().name().contains("BANNER")) {
-                // Teleport zu bestehendem Home
                 p.closeInventory();
                 if (dataConfig.contains(path + ".world")) {
                     Location loc = new Location(
@@ -259,20 +281,19 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     p.sendMessage(ChatColor.RED + "Fehler beim Laden des Homes!");
                 }
             }
-        }
-        // 2. Klick im Banner-Auswahl-Menü
-        else if (title.equals(GUI_BANNER_TITLE)) {
+        } else if (title.equals(GUI_BANNER_TITLE)) {
             ItemMeta meta = current.getItemMeta();
             if (meta == null || !meta.hasDisplayName()) return;
 
             String display = meta.getDisplayName();
             if (!display.startsWith(ChatColor.GOLD + "Slot-Index:")) return;
 
-            int slotIndex = Integer.parseInt(display.replace(ChatColor.GOLD + "Slot-Index:", ""));
+            boolean isOminous = display.contains("(Ominous)");
+            String cleanDisplay = display.replace(" (Ominous)", "");
+            int slotIndex = Integer.parseInt(cleanDisplay.replace(ChatColor.GOLD + "Slot-Index:", ""));
             Material chosenBanner = current.getType();
 
-            // Zustand speichern und nach Chat-Eingabe fragen
-            pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
+            pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, isOminous, p.getLocation()));
             p.closeInventory();
 
             p.sendMessage(ChatColor.YELLOW + "========================================");
@@ -283,8 +304,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
     }
 
-    // ===== CHAT-EVENT FÜR HOMENAME =====
-
     @EventHandler
     public void onChat(AsyncPlayerChatEvent event) {
         Player p = event.getPlayer();
@@ -292,17 +311,17 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         if (!pendingHomes.containsKey(id)) return;
 
-        event.setCancelled(true); // Chat-Nachricht abfangen
+        event.setCancelled(true);
         PendingHome pending = pendingHomes.remove(id);
         String homeName = event.getMessage().trim();
 
-        // Auf dem Hauptthread speichern & Feedback geben
         Bukkit.getScheduler().runTask(this, () -> {
             String path = "homes." + id.toString() + "." + pending.slotIndex;
             Location loc = pending.location;
 
             dataConfig.set(path + ".name", homeName);
             dataConfig.set(path + ".banner", pending.bannerMaterial.name());
+            dataConfig.set(path + ".isOminous", pending.isOminous);
             dataConfig.set(path + ".world", loc.getWorld().getName());
             dataConfig.set(path + ".x", loc.getX());
             dataConfig.set(path + ".y", loc.getY());
