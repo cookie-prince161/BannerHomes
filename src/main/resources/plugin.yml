@@ -1,13 +1,13 @@
 name: BannerHomes
-version: 1.6.0
+version: 1.7.0
 main: com.elias.bannerhomes.BannerHomes
 api-version: '1.20'
-description: Visuelles Home-System mit Dimensions-Validierung und Admin-Override.
+description: Visuelles Home-System mit Admin-Dimensions-Verwaltung sowie Spawn- & SD-Teleport.
 
 commands:
   homes:
     description: Öffnet das Home-Menü oder ändert Admin-Einstellungen.
-    usage: /homes [setmax <0-5> | cooldown <Sekunden>]
+    usage: /homes [setmax <0-5> | cooldown <homes|spawn|sd> <Sekunden>]
     permission: bannerhomes.use
   homesettings:
     description: Öffnet das Admin-Einstellungsmenü für Dimensionen.
@@ -20,6 +20,14 @@ commands:
     description: Löscht ein bestimmtes Home.
     usage: /homedelete <Name|Nummer>
     permission: bannerhomes.use
+  tp:
+    description: Teleportiert zum Spawn oder Shopping District.
+    usage: /tp <spawn|sd|shoppingdistrict>
+    permission: bannerhomes.use
+  settp:
+    description: Setzt den Spawn oder Shopping District Punkt.
+    usage: /settp <spawn|sd|shoppingdistrict>
+    permission: bannerhomes.admin
 
 permissions:
   bannerhomes.use:
