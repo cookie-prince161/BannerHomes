@@ -19,7 +19,6 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.BannerMeta;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -235,14 +234,14 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // Slot 18: Platzhalter / Import-Slot
+        // Slot 18: Import-Slot (Lichtgraues Glas als Ablagefeld)
         ItemStack importSlot = new ItemStack(Material.LIGHT_GRAY_STAINED_GLASS_PANE);
         ItemMeta iMeta = importSlot.getItemMeta();
         if (iMeta != null) {
-            iMeta.setDisplayName(ChatColor.AQUA + "Eigenes Banner hier ablegen");
+            iMeta.setDisplayName(ChatColor.AQUA + "Banner hierhin ziehen/klicken");
             List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Lege ein Banner aus deinem Inventar hier ab,");
-            lore.add(ChatColor.GRAY + "um ein eigenes Muster dauerhaft zu speichern!");
+            lore.add(ChatColor.GRAY + "Klicke mit einem eigenen Banner aus deinem");
+            lore.add(ChatColor.GRAY + "Inventar hierhin, um das Muster zu speichern!");
             iMeta.setLore(lore);
             importSlot.setItemMeta(iMeta);
         }
@@ -286,8 +285,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(15, del);
 
-        // Zurück-Button auf Slot 18 (unten links)
-        inv.setItem(18, getBackButton());
+        // Zurück-Button auf Slot 26
+        inv.setItem(26, getBackButton());
 
         p.openInventory(inv);
     }
@@ -316,8 +315,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(15, no);
 
-        // Zurück-Button auf Slot 18 (unten links)
-        inv.setItem(18, getBackButton());
+        // Zurück-Button auf Slot 26
+        inv.setItem(26, getBackButton());
 
         p.openInventory(inv);
     }
@@ -531,14 +530,28 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (!(event.getWhoClicked() instanceof Player)) return;
         Player p = (Player) event.getWhoClicked();
 
+        // 1. Klick im eigenen Inventar unten zulassen, wenn es ein Banner ist
+        if (event.getClickedInventory() == p.getInventory()) {
+            ItemStack clickedItem = event.getCurrentItem();
+            if (clickedItem != null && clickedItem.getType().name().contains("BANNER")) {
+                // Erlauben, Banner aufzunehmen/zu bewegen
+                return;
+            } else {
+                event.setCancelled(true);
+                return;
+            }
+        }
+
+        // Klicks im oberen Menü abfangen
+        event.setCancelled(true);
+
         int maxHomes = getConfig().getInt("max-homes", 3);
         int[] slots = getSlotsForAmount(maxHomes);
 
-        // Banner-Import Logik in Slot 18 im Banner-Auswahlfenster
+        // 2. IMPORT-SYSTEM IN BANNER-AUSWAHL (Slot 18)
         if (title.equals(GUI_BANNER_TITLE) && event.getSlot() == 18) {
             ItemStack cursor = event.getCursor();
             if (cursor != null && cursor.getType().name().contains("BANNER")) {
-                event.setCancelled(true);
                 saveCustomBanner(p, cursor);
                 p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
                 p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
@@ -547,21 +560,18 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        event.setCancelled(true);
         ItemStack current = event.getCurrentItem();
         if (current == null || current.getType() == Material.AIR) return;
 
-        // Zurück-Button Klick (Slot 18 / Slot 26)
-        if (current.getType() == Material.RED_STAINED_GLASS_PANE
-                && current.hasItemMeta()
-                && ChatColor.RED.toString().concat("Zurück").equals(current.getItemMeta().getDisplayName())) {
+        // Zurück-Button Klick (Slot 26)
+        if (event.getSlot() == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
             openHomeMenu(p);
             p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
             return;
         }
 
-        // 1. HAUPTMENÜ (/homes)
+        // HAUPTMENÜ (/homes)
         if (title.equals(GUI_MAIN_TITLE)) {
             int slot = event.getSlot();
 
@@ -594,7 +604,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // 2. BANNER-AUSWAHL
+        // BANNER-AUSWAHL
         else if (title.equals(GUI_BANNER_TITLE)) {
             ItemMeta meta = current.getItemMeta();
             if (meta == null || !meta.hasDisplayName()) return;
@@ -624,7 +634,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // 3. EINSTELLUNGEN
+        // EINSTELLUNGEN
         else if (title.startsWith(GUI_SETTINGS_PREFIX)) {
             String homeName = title.replace(GUI_SETTINGS_PREFIX, "");
             int homeIndex = getHomeIndexByName(p, homeName);
@@ -642,7 +652,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // 4. LÖSCHEN BESTÄTIGEN
+        // LÖSCHEN BESTÄTIGEN
         else if (title.startsWith(GUI_CONFIRM_PREFIX)) {
             int openBracket = title.lastIndexOf("[");
             int closeBracket = title.lastIndexOf("]");
@@ -683,14 +693,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         return -1;
     }
 
-    // ===== CHAT EINGABE (BEIM ERSTELLEN & LÖSCHEN) =====
+    // ===== CHAT EINGABE =====
 
     @EventHandler
     public void onChat(AsyncPlayerChatEvent event) {
         Player p = event.getPlayer();
         UUID id = p.getUniqueId();
 
-        // 1. Lösch-Bestätigung per Chat
         if (pendingDeletes.containsKey(id)) {
             event.setCancelled(true);
             int targetIndex = pendingDeletes.remove(id);
@@ -706,7 +715,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return;
         }
 
-        // 2. Namenseingabe beim Erstellen
         if (pendingHomes.containsKey(id)) {
             event.setCancelled(true);
             PendingHome pending = pendingHomes.remove(id);
