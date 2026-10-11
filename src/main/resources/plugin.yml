@@ -1,8 +1,8 @@
 name: BannerHomes
-version: 1.5.0
+version: 1.6.0
 main: com.elias.bannerhomes.BannerHomes
 api-version: '1.20'
-description: Visuelles Home-System mit Admin-Dimensions-Verwaltung.
+description: Visuelles Home-System mit Dimensions-Validierung und Admin-Override.
 
 commands:
   homes:
