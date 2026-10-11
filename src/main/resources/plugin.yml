@@ -1,0 +1,15 @@
+name: BannerHomes
+version: 1.0.0
+main: com.elias.bannerhomes.BannerHomes
+api-version: '1.20'
+description: Visuelles Home-System mit Banner-Auswahl und Chat-Eingabe.
+
+commands:
+  home:
+    description: Öffnet das Home-Menü oder teleportiert zu einem Home.
+    usage: /home [menü|menu]
+    permission: bannerhomes.use
+
+permissions:
+  bannerhomes.use:
+    default: true
