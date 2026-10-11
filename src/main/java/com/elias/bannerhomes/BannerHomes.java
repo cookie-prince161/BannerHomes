@@ -200,7 +200,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         ItemStack item = new ItemStack(Material.WHITE_BANNER);
         BannerMeta meta = (BannerMeta) item.getItemMeta();
         if (meta != null) {
-            meta.addPattern(new Pattern(DyeColor.RHOMBUS, PatternType.RHOMBUS_MIDDLE));
+            meta.addPattern(new Pattern(DyeColor.CYAN, PatternType.RHOMBUS_MIDDLE));
             meta.addPattern(new Pattern(DyeColor.LIGHT_GRAY, PatternType.STRIPE_BOTTOM));
             meta.addPattern(new Pattern(DyeColor.GRAY, PatternType.CIRCLE_MIDDLE));
             meta.addPattern(new Pattern(DyeColor.LIGHT_GRAY, PatternType.BORDER));
