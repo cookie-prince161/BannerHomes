@@ -80,7 +80,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.1 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.2 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -157,7 +157,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (list != null) {
             for (Object obj : list) {
                 if (obj instanceof ItemStack) {
-                    banners.add(((ItemStack) obj).clone());
+                    ItemStack item = ((ItemStack) obj).clone();
+                    item.setAmount(1); // Sicherstellen, dass geladene Banner Menge 1 haben
+                    banners.add(item);
                 }
             }
         }
@@ -166,7 +168,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private void saveCustomBanner(Player p, ItemStack banner) {
         List<ItemStack> list = getCustomBanners(p);
-        list.add(banner.clone());
+        ItemStack singleBanner = banner.clone();
+        singleBanner.setAmount(1); // WICHTIG: Immer nur 1 Banner speichern, um Duping zu verhindern!
+        list.add(singleBanner);
         dataConfig.set("custom-banners." + p.getUniqueId(), list);
         saveDataConfig();
     }
@@ -210,6 +214,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 } else {
                     bannerItem = bannerItem.clone();
                 }
+                bannerItem.setAmount(1);
 
                 // 1. Farbstoff-Item über dem Banner (Slot - 9)
                 ItemStack dyeItem = new ItemStack(getDyeForBanner(bannerItem.getType()));
@@ -339,6 +344,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int currentSlot = 0;
         for (Material b : standardBanners) {
             ItemStack item = new ItemStack(b);
+            item.setAmount(1);
             ItemMeta meta = item.getItemMeta();
             if (meta != null) {
                 meta.setDisplayName(ChatColor.GREEN + b.name().replace("_BANNER", "").toLowerCase());
@@ -353,6 +359,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         List<ItemStack> customBanners = getCustomBanners(p);
         for (ItemStack cBanner : customBanners) {
             ItemStack displayBanner = cBanner.clone();
+            displayBanner.setAmount(1);
             ItemMeta meta = displayBanner.getItemMeta();
             if (meta != null) {
                 List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
@@ -1022,7 +1029,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 if (event.isShiftClick()) {
                     removeCustomBanner(p, customIndex);
                     if (current != null && current.getType() != Material.AIR) {
-                        p.getInventory().addItem(current.clone());
+                        ItemStack returnBanner = current.clone();
+                        returnBanner.setAmount(1);
+                        p.getInventory().addItem(returnBanner);
                     }
                     p.sendMessage(ChatColor.YELLOW + "Benutzerdefiniertes Banner aus der Auswahl entfernt und ins Inventar zurückgelegt.");
                     p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
@@ -1034,6 +1043,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             // Ausgewähltes Banner als Home-Banner festlegen
             if (current != null && current.getType().name().contains("BANNER")) {
                 ItemStack chosenBanner = current.clone();
+                chosenBanner.setAmount(1);
                 ItemMeta meta = chosenBanner.getItemMeta();
                 if (meta != null && meta.hasLore()) {
                     List<String> lore = meta.getLore();
@@ -1047,7 +1057,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 String path = "homes." + p.getUniqueId() + "." + slotIndex;
 
                 if (dataConfig.contains(path + ".name")) {
-                    // Home exisitert bereits -> Nur Banner-Design aktualisieren!
                     dataConfig.set(path + ".bannerItem", chosenBanner);
                     saveDataConfig();
                     p.closeInventory();
@@ -1055,7 +1064,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                     openHomeMenu(p);
                 } else {
-                    // Neues Home -> Chat-Aufforderung für Namen starten
                     pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
                     p.closeInventory();
                     p.sendMessage(ChatColor.YELLOW + "========================================");
