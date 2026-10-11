@@ -80,7 +80,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.2 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.3 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -158,7 +158,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             for (Object obj : list) {
                 if (obj instanceof ItemStack) {
                     ItemStack item = ((ItemStack) obj).clone();
-                    item.setAmount(1); // Sicherstellen, dass geladene Banner Menge 1 haben
+                    item.setAmount(1);
                     banners.add(item);
                 }
             }
@@ -169,7 +169,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     private void saveCustomBanner(Player p, ItemStack banner) {
         List<ItemStack> list = getCustomBanners(p);
         ItemStack singleBanner = banner.clone();
-        singleBanner.setAmount(1); // WICHTIG: Immer nur 1 Banner speichern, um Duping zu verhindern!
+        singleBanner.setAmount(1);
         list.add(singleBanner);
         dataConfig.set("custom-banners." + p.getUniqueId(), list);
         saveDataConfig();
@@ -182,6 +182,24 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             dataConfig.set("custom-banners." + p.getUniqueId(), list);
             saveDataConfig();
         }
+    }
+
+    private ItemStack cleanBannerItem(ItemStack item) {
+        if (item == null) return null;
+        ItemStack cleaned = item.clone();
+        cleaned.setAmount(1);
+        ItemMeta meta = cleaned.getItemMeta();
+        if (meta != null) {
+            if (meta.hasLore()) {
+                List<String> lore = meta.getLore();
+                if (lore != null) {
+                    lore.removeIf(l -> l.contains("Löschen") || l.contains("Standard-Banner") || l.contains("Shift"));
+                    meta.setLore(lore.isEmpty() ? null : lore);
+                }
+            }
+            cleaned.setItemMeta(meta);
+        }
+        return cleaned;
     }
 
     // ===== GUIS =====
@@ -397,16 +415,17 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        ItemStack torch = new ItemStack(Material.REDSTONE_TORCH);
-        ItemMeta torchMeta = torch.getItemMeta();
-        if (torchMeta != null) {
-            torchMeta.setDisplayName(isMain ? ChatColor.GREEN + "✔ Main-Home (Aktiv)" : ChatColor.RED + "✖ Kein Main-Home");
+        // NEU: Copper-Lampe (COPPER_BULB) wenn Main-Home aktiv, sonst Redstone-Torch (REDSTONE_TORCH)
+        ItemStack mainItem = new ItemStack(isMain ? Material.COPPER_BULB : Material.REDSTONE_TORCH);
+        ItemMeta mainMeta = mainItem.getItemMeta();
+        if (mainMeta != null) {
+            mainMeta.setDisplayName(isMain ? ChatColor.GREEN + "✔ Main-Home (Aktiv)" : ChatColor.RED + "✖ Kein Main-Home");
             List<String> lore = new ArrayList<>();
             lore.add(ChatColor.GRAY + "Klicke, um dieses Home als Standard /home zu setzen.");
-            torchMeta.setLore(lore);
-            torch.setItemMeta(torchMeta);
+            mainMeta.setLore(lore);
+            mainItem.setItemMeta(mainMeta);
         }
-        inv.setItem(11, torch);
+        inv.setItem(11, mainItem);
 
         ItemStack del = new ItemStack(Material.LAVA_BUCKET);
         ItemMeta delMeta = del.getItemMeta();
@@ -1023,14 +1042,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 return;
             }
 
-            // Custom Banner per Shift-Klick entfernen
+            // Custom Banner per Shift-Klick entfernen und Lore bereinigen
             if (clickedSlot >= 16 && clickedSlot < importSlotIndex) {
                 int customIndex = clickedSlot - 16;
                 if (event.isShiftClick()) {
                     removeCustomBanner(p, customIndex);
                     if (current != null && current.getType() != Material.AIR) {
-                        ItemStack returnBanner = current.clone();
-                        returnBanner.setAmount(1);
+                        ItemStack returnBanner = cleanBannerItem(current);
                         p.getInventory().addItem(returnBanner);
                     }
                     p.sendMessage(ChatColor.YELLOW + "Benutzerdefiniertes Banner aus der Auswahl entfernt und ins Inventar zurückgelegt.");
@@ -1040,27 +1058,19 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
             }
 
-            // Ausgewähltes Banner als Home-Banner festlegen
+            // Ausgewähltes Banner als Home-Banner festlegen (mit bereinigter Lore)
             if (current != null && current.getType().name().contains("BANNER")) {
-                ItemStack chosenBanner = current.clone();
-                chosenBanner.setAmount(1);
-                ItemMeta meta = chosenBanner.getItemMeta();
-                if (meta != null && meta.hasLore()) {
-                    List<String> lore = meta.getLore();
-                    if (lore != null && !lore.isEmpty()) {
-                        lore.removeIf(l -> l.contains("Löschen") || l.contains("Standard-Banner"));
-                        meta.setLore(lore.isEmpty() ? null : lore);
-                        chosenBanner.setItemMeta(meta);
-                    }
-                }
+                ItemStack chosenBanner = cleanBannerItem(current);
 
-                String path = "homes." + p.getUniqueId() + "." + slotIndex;
+                String path = "homes." + uuidStr + "." + slotIndex; // Korrektur zu uuidStr / p.getUniqueId()
+                String playerUuidStr = p.getUniqueId().toString();
+                String targetPath = "homes." + playerUuidStr + "." + slotIndex;
 
-                if (dataConfig.contains(path + ".name")) {
-                    dataConfig.set(path + ".bannerItem", chosenBanner);
+                if (dataConfig.contains(targetPath + ".name")) {
+                    dataConfig.set(targetPath + ".bannerItem", chosenBanner);
                     saveDataConfig();
                     p.closeInventory();
-                    p.sendMessage(ChatColor.GREEN + "Banner-Design für Home '" + dataConfig.getString(path + ".name") + "' erfolgreich geändert!");
+                    p.sendMessage(ChatColor.GREEN + "Banner-Design für Home '" + dataConfig.getString(targetPath + ".name") + "' erfolgreich geändert!");
                     p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                     openHomeMenu(p);
                 } else {
