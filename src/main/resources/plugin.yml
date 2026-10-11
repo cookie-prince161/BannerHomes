@@ -1,8 +1,8 @@
 name: BannerHomes
-version: 1.1.0
+version: 1.2.0
 main: com.elias.bannerhomes.BannerHomes
 api-version: '1.20'
-description: Visuelles Home-System mit Banner-Auswahl, Main-Home und Einstellungen.
+description: Visuelles Home-System mit Cooldown, Dimensionen und Admin-Verwaltung.
 
 commands:
   homes:
@@ -20,3 +20,5 @@ commands:
 permissions:
   bannerhomes.use:
     default: true
+  bannerhomes.admin:
+    default: op
