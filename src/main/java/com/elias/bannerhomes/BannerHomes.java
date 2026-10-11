@@ -1,6 +1,8 @@
 package com.elias.bannerhomes;
 
 import net.md_5.bungee.api.ChatColor;
+import net.md_5.bungee.api.chat.ClickEvent;
+import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -375,7 +377,30 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.sendMessage(ChatColor.RED + "Benutzung: /homedelete <Name|Nummer>");
                 return true;
             }
-            requestChatDelete(p, args[0]);
+            if (args[0].equalsIgnoreCase("confirm") && args.length >= 2) {
+                try {
+                    int index = Integer.parseInt(args[1]);
+                    if (pendingDeletes.containsKey(p.getUniqueId()) && pendingDeletes.get(p.getUniqueId()) == index) {
+                        pendingDeletes.remove(p.getUniqueId());
+                        deleteHomeByIndex(p, index);
+                    } else {
+                        p.sendMessage(ChatColor.RED + "Ungültige oder abgelaufene Anfrage.");
+                    }
+                } catch (NumberFormatException e) {
+                    p.sendMessage(ChatColor.RED + "Ungültiger Index.");
+                }
+                return true;
+            }
+            if (args[0].equalsIgnoreCase("cancel")) {
+                if (pendingDeletes.containsKey(p.getUniqueId())) {
+                    pendingDeletes.remove(p.getUniqueId());
+                    p.sendMessage(ChatColor.YELLOW + "Löschvorgang abgebrochen.");
+                } else {
+                    p.sendMessage(ChatColor.YELLOW + "Kein aktiver Löschvorgang gefunden.");
+                }
+                return true;
+            }
+            requestInteractiveDelete(p, args[0]);
             return true;
         }
 
@@ -392,7 +417,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         return true;
     }
 
-    private void requestChatDelete(Player p, String arg) {
+    private void requestInteractiveDelete(Player p, String arg) {
         String uuidStr = p.getUniqueId().toString();
         int maxHomes = getConfig().getInt("max-homes", 3);
         int targetIndex = -1;
@@ -423,7 +448,24 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             p.sendMessage(ChatColor.YELLOW + "========================================");
             p.sendMessage(ChatColor.RED + "Möchtest du das Home '" + name + "' wirklich löschen?");
-            p.sendMessage(ChatColor.GREEN + "Schreibe 'ja' in den Chat zum Bestätigen oder 'nein' zum Abbrechen.");
+
+            // Anklickbare Chat-Buttons
+            TextComponent promptMsg = new TextComponent("Bestätigung: ");
+            promptMsg.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+
+            TextComponent yesBtn = new TextComponent("§a§l[JA]");
+            yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + targetIndex));
+
+            TextComponent space = new TextComponent("   ");
+
+            TextComponent noBtn = new TextComponent("§c§l[NEIN]");
+            noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
+
+            promptMsg.addExtra(yesBtn);
+            promptMsg.addExtra(space);
+            promptMsg.addExtra(noBtn);
+
+            p.spigot().sendMessage(promptMsg);
             p.sendMessage(ChatColor.YELLOW + "========================================");
             p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
         } else {
@@ -534,7 +576,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (event.getClickedInventory() == p.getInventory()) {
             ItemStack clickedItem = event.getCurrentItem();
             if (clickedItem != null && clickedItem.getType().name().contains("BANNER")) {
-                // Erlauben, Banner aufzunehmen/zu bewegen
                 return;
             } else {
                 event.setCancelled(true);
@@ -542,7 +583,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // Klicks im oberen Menü abfangen
         event.setCancelled(true);
 
         int maxHomes = getConfig().getInt("max-homes", 3);
@@ -693,27 +733,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         return -1;
     }
 
-    // ===== CHAT EINGABE =====
+    // ===== CHAT EINGABE (NUR NOCH FÜR NAMEN BEIM ERSTELLEN) =====
 
     @EventHandler
     public void onChat(AsyncPlayerChatEvent event) {
         Player p = event.getPlayer();
         UUID id = p.getUniqueId();
-
-        if (pendingDeletes.containsKey(id)) {
-            event.setCancelled(true);
-            int targetIndex = pendingDeletes.remove(id);
-            String input = event.getMessage().trim().toLowerCase();
-
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (input.equals("ja") || input.equals("yes")) {
-                    deleteHomeByIndex(p, targetIndex);
-                } else {
-                    p.sendMessage(ChatColor.YELLOW + "Löschvorgang abgebrochen.");
-                }
-            });
-            return;
-        }
 
         if (pendingHomes.containsKey(id)) {
             event.setCancelled(true);
