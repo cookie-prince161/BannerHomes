@@ -1,5 +1,7 @@
-# Maximale Anzahl an Home-Slots (0 bis 4). Bei 0 ist das Feature deaktiviert.
+# Maximale Anzahl an Home-Slots (0 bis 5). Bei 0 ist das Feature deaktiviert.
 max-homes: 3
 
-# Wartezeit zwischen Teleports in Sekunden (z. B. 120 Sekunden = 2 Minuten)
+# Wartezeiten zwischen Teleports in Sekunden
 teleport-cooldown-seconds: 120
+spawn-cooldown-seconds: 60
+sd-cooldown-seconds: 300
