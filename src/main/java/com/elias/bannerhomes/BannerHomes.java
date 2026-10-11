@@ -41,6 +41,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
+    private final Map<UUID, Long> lastTeleportTimes = new HashMap<>();
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -49,11 +50,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         final int slotIndex;
         final ItemStack bannerItem;
         final Location location;
+        final String dimension;
 
-        PendingHome(int slotIndex, ItemStack bannerItem, Location location) {
+        PendingHome(int slotIndex, ItemStack bannerItem, Location location, String dimension) {
             this.slotIndex = slotIndex;
             this.bannerItem = bannerItem.clone();
             this.location = location;
+            this.dimension = dimension;
         }
     }
 
@@ -81,6 +84,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     public void onDisable() {
         pendingHomes.clear();
         pendingDeletes.clear();
+        lastTeleportTimes.clear();
     }
 
     private void loadDataConfig() {
@@ -110,20 +114,20 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             case 2: return new int[]{12, 14};
             case 3: return new int[]{11, 13, 15};
             case 4: return new int[]{10, 12, 14, 16};
-            case 5: return new int[]{9, 11, 13, 15, 17};
-            default: return new int[]{11, 13, 15};
+            default: return new int[]{};
         }
     }
 
     // ===== GUIS =====
 
     public void openHomeMenu(Player p) {
-        Inventory inv = Bukkit.createInventory(null, 27, GUI_MAIN_TITLE);
-
         int maxHomes = getConfig().getInt("max-homes", 3);
-        if (maxHomes < 1) maxHomes = 1;
-        if (maxHomes > 5) maxHomes = 5;
+        if (maxHomes <= 0) {
+            p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
+            return;
+        }
 
+        Inventory inv = Bukkit.createInventory(null, 27, GUI_MAIN_TITLE);
         int[] slots = getSlotsForAmount(maxHomes);
         String uuidStr = p.getUniqueId().toString();
 
@@ -181,21 +185,36 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Freier Slot (Kompass)
-                ItemStack compass = new ItemStack(Material.COMPASS);
-                ItemMeta meta = compass.getItemMeta();
+                // Freier Slot (Dimension-abhängiges Item)
+                String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+                ItemStack placeholder;
+                String dimName;
+
+                if (dim.equals("NETHER")) {
+                    placeholder = new ItemStack(Material.RECOVERY_COMPASS);
+                    dimName = "Nether";
+                } else if (dim.equals("END")) {
+                    placeholder = new ItemStack(Material.CHORUS_FRUIT);
+                    dimName = "End";
+                } else {
+                    placeholder = new ItemStack(Material.COMPASS);
+                    dimName = "Overworld";
+                }
+
+                ItemMeta meta = placeholder.getItemMeta();
                 if (meta != null) {
-                    meta.setDisplayName(ChatColor.YELLOW + "Home-Slot " + (i + 1) + " " + ChatColor.GRAY + "(Frei)");
+                    meta.setDisplayName(ChatColor.YELLOW + "Home-Slot " + (i + 1) + " " + ChatColor.GRAY + "(" + dimName + ")");
                     List<String> lore = new ArrayList<>();
                     lore.add(ChatColor.GRAY + "Klicke, um ein Home zu erstellen");
                     meta.setLore(lore);
-                    compass.setItemMeta(meta);
+                    placeholder.setItemMeta(meta);
                 }
-                inv.setItem(slot, compass);
+                inv.setItem(slot, placeholder);
             }
         }
 
         p.openInventory(inv);
+        p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
 
     public void openBannerSelectMenu(Player p, int slotIndex) {
@@ -220,7 +239,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.addItem(item);
         }
 
-        // Benutzerdefinierte Banner des Spielers hinzufügen
         List<?> customBanners = dataConfig.getList("custom-banners." + p.getUniqueId());
         if (customBanners != null) {
             for (Object obj : customBanners) {
@@ -236,7 +254,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // Slot 18: Import-Slot (Lichtgraues Glas als Ablagefeld)
         ItemStack importSlot = new ItemStack(Material.LIGHT_GRAY_STAINED_GLASS_PANE);
         ItemMeta iMeta = importSlot.getItemMeta();
         if (iMeta != null) {
@@ -248,8 +265,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             importSlot.setItemMeta(iMeta);
         }
         inv.setItem(18, importSlot);
-
-        // Slot 26: Zurück-Button
         inv.setItem(26, getBackButton());
 
         p.openInventory(inv);
@@ -260,10 +275,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         String path = "homes." + uuidStr + "." + homeIndex;
         String name = dataConfig.getString(path + ".name", "Home " + (homeIndex + 1));
         boolean isMain = dataConfig.getBoolean(path + ".isMain", false);
+        String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // Redstone Torch für Main-Home Status (Slot 11)
+        // Main-Home Torch (Slot 11)
         ItemStack torch = new ItemStack(Material.REDSTONE_TORCH);
         ItemMeta torchMeta = torch.getItemMeta();
         if (torchMeta != null) {
@@ -274,6 +290,32 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             torch.setItemMeta(torchMeta);
         }
         inv.setItem(11, torch);
+
+        // Nur für Admins: Dimensions-Wechsler (Slot 13)
+        if (p.hasPermission("bannerhomes.admin")) {
+            ItemStack dimItem;
+            String dimLabel;
+            if (dim.equals("NETHER")) {
+                dimItem = new ItemStack(Material.NETHERRACK);
+                dimLabel = ChatColor.RED + "Nether";
+            } else if (dim.equals("END")) {
+                dimItem = new ItemStack(Material.END_STONE);
+                dimLabel = ChatColor.YELLOW + "End";
+            } else {
+                dimItem = new ItemStack(Material.GRASS_BLOCK);
+                dimLabel = ChatColor.GREEN + "Overworld";
+            }
+
+            ItemMeta dimMeta = dimItem.getItemMeta();
+            if (dimMeta != null) {
+                dimMeta.setDisplayName(ChatColor.LIGHT_PURPLE + "Dimension: " + dimLabel);
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Klicke, um die Dimension zu wechseln (Admin).");
+                dimMeta.setLore(lore);
+                dimItem.setItemMeta(dimMeta);
+            }
+            inv.setItem(13, dimItem);
+        }
 
         // Löschen Button (Slot 15)
         ItemStack del = new ItemStack(Material.LAVA_BUCKET);
@@ -287,9 +329,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(15, del);
 
-        // Zurück-Button auf Slot 26
         inv.setItem(26, getBackButton());
-
         p.openInventory(inv);
     }
 
@@ -299,27 +339,25 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_CONFIRM_PREFIX + name + " [" + homeIndex + "]");
 
-        // Bestätigen (Grüne Wolle auf Slot 13)
+        // Grüne Wolle auf Slot 12 (1 Slot nach links verschoben)
         ItemStack yes = new ItemStack(Material.GREEN_WOOL);
         ItemMeta yesMeta = yes.getItemMeta();
         if (yesMeta != null) {
             yesMeta.setDisplayName(ChatColor.GREEN + "Löschen bestätigen");
             yes.setItemMeta(yesMeta);
         }
-        inv.setItem(13, yes);
+        inv.setItem(12, yes);
 
-        // Abbrechen (Rote Wolle auf Slot 15)
+        // Rote Wolle auf Slot 14 (1 Slot nach links verschoben)
         ItemStack no = new ItemStack(Material.RED_WOOL);
         ItemMeta noMeta = no.getItemMeta();
         if (noMeta != null) {
             noMeta.setDisplayName(ChatColor.RED + "Abbrechen");
             no.setItemMeta(noMeta);
         }
-        inv.setItem(15, no);
+        inv.setItem(14, no);
 
-        // Zurück-Button auf Slot 26
         inv.setItem(26, getBackButton());
-
         p.openInventory(inv);
     }
 
@@ -367,8 +405,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         String cmdName = command.getName().toLowerCase();
 
         if (cmdName.equals("homes")) {
+            int maxHomes = getConfig().getInt("max-homes", 3);
+            if (maxHomes <= 0) {
+                p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
+                return true;
+            }
             openHomeMenu(p);
-            p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
             return true;
         }
 
@@ -405,8 +447,14 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
 
         if (cmdName.equals("home")) {
+            int maxHomes = getConfig().getInt("max-homes", 3);
+            if (maxHomes <= 0) {
+                p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
+                return true;
+            }
+
             if (args.length == 0) {
-                teleportToMainHome(p);
+                teleportWithCooldown(p, getMainHomePath(p));
                 return true;
             } else {
                 teleportToHomeByArg(p, args[0]);
@@ -449,7 +497,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             p.sendMessage(ChatColor.YELLOW + "========================================");
             p.sendMessage(ChatColor.RED + "Möchtest du das Home '" + name + "' wirklich löschen?");
 
-            // Anklickbare Chat-Buttons
             TextComponent promptMsg = new TextComponent("Bestätigung: ");
             promptMsg.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
 
@@ -473,20 +520,60 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
     }
 
-    // ===== TELEPORT LOGIK =====
+    // ===== TELEPORT LOGIK & COOLDOWN =====
 
-    private void teleportToMainHome(Player p) {
+    private void teleportWithCooldown(Player p, String path) {
+        if (path == null) {
+            p.sendMessage(ChatColor.RED + "Du hast noch kein Main-Home festgelegt! Öffne /homes zum Einstellen.");
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long cooldownSec = getConfig().getLong("teleport-cooldown-seconds", 120);
+        long cooldownMs = cooldownSec * 1000;
+
+        if (lastTeleportTimes.containsKey(p.getUniqueId())) {
+            long lastTime = lastTeleportTimes.get(p.getUniqueId());
+            long diff = now - lastTime;
+            if (diff < cooldownMs) {
+                long remainingSec = (cooldownMs - diff) / 1000;
+                long minutes = remainingSec / 60;
+                long seconds = remainingSec % 60;
+                p.sendMessage(ChatColor.RED + "Du musst noch " + (minutes > 0 ? minutes + "m " : "") + seconds + "s warten, bevor du dich wieder teleportieren kannst.");
+                p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                return;
+            }
+        }
+
+        if (dataConfig.contains(path + ".world")) {
+            Location loc = new Location(
+                    Bukkit.getWorld(dataConfig.getString(path + ".world")),
+                    dataConfig.getDouble(path + ".x"),
+                    dataConfig.getDouble(path + ".y"),
+                    dataConfig.getDouble(path + ".z"),
+                    (float) dataConfig.getDouble(path + ".yaw"),
+                    (float) dataConfig.getDouble(path + ".pitch")
+            );
+            p.teleport(loc);
+            lastTeleportTimes.put(p.getUniqueId(), now);
+
+            String name = dataConfig.getString(path + ".name");
+            p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
+            p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
+        }
+    }
+
+    private String getMainHomePath(Player p) {
         String uuidStr = p.getUniqueId().toString();
         int maxHomes = getConfig().getInt("max-homes", 3);
 
         for (int i = 0; i < maxHomes; i++) {
             String path = "homes." + uuidStr + "." + i;
             if (dataConfig.contains(path + ".name") && dataConfig.getBoolean(path + ".isMain", false)) {
-                teleportToPath(p, path);
-                return;
+                return path;
             }
         }
-        p.sendMessage(ChatColor.RED + "Du hast noch kein Main-Home festgelegt! Öffne /homes zum Einstellen.");
+        return null;
     }
 
     private void teleportToHomeByArg(Player p, String arg) {
@@ -498,7 +585,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (num >= 0 && num < maxHomes) {
                 String path = "homes." + uuidStr + "." + num;
                 if (dataConfig.contains(path + ".name")) {
-                    teleportToPath(p, path);
+                    teleportWithCooldown(p, path);
                     return;
                 }
             }
@@ -509,30 +596,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (dataConfig.contains(path + ".name")) {
                 String name = dataConfig.getString(path + ".name");
                 if (name != null && name.equalsIgnoreCase(arg)) {
-                    teleportToPath(p, path);
+                    teleportWithCooldown(p, path);
                     return;
                 }
             }
         }
 
         p.sendMessage(ChatColor.RED + "Home '" + arg + "' wurde nicht gefunden.");
-    }
-
-    private void teleportToPath(Player p, String path) {
-        if (dataConfig.contains(path + ".world")) {
-            Location loc = new Location(
-                    Bukkit.getWorld(dataConfig.getString(path + ".world")),
-                    dataConfig.getDouble(path + ".x"),
-                    dataConfig.getDouble(path + ".y"),
-                    dataConfig.getDouble(path + ".z"),
-                    (float) dataConfig.getDouble(path + ".yaw"),
-                    (float) dataConfig.getDouble(path + ".pitch")
-            );
-            p.teleport(loc);
-            String name = dataConfig.getString(path + ".name");
-            p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
-            p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
-        }
     }
 
     private void deleteHomeByIndex(Player p, int targetIndex) {
@@ -572,7 +642,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (!(event.getWhoClicked() instanceof Player)) return;
         Player p = (Player) event.getWhoClicked();
 
-        // 1. Klick im eigenen Inventar unten zulassen, wenn es ein Banner ist
         if (event.getClickedInventory() == p.getInventory()) {
             ItemStack clickedItem = event.getCurrentItem();
             if (clickedItem != null && clickedItem.getType().name().contains("BANNER")) {
@@ -588,7 +657,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int maxHomes = getConfig().getInt("max-homes", 3);
         int[] slots = getSlotsForAmount(maxHomes);
 
-        // 2. IMPORT-SYSTEM IN BANNER-AUSWAHL (Slot 18)
         if (title.equals(GUI_BANNER_TITLE) && event.getSlot() == 18) {
             ItemStack cursor = event.getCursor();
             if (cursor != null && cursor.getType().name().contains("BANNER")) {
@@ -603,7 +671,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         ItemStack current = event.getCurrentItem();
         if (current == null || current.getType() == Material.AIR) return;
 
-        // Zurück-Button Klick (Slot 26)
         if (event.getSlot() == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
             openHomeMenu(p);
@@ -625,13 +692,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     return;
                 }
                 if (slot == baseSlot) {
-                    if (current.getType() == Material.COMPASS) {
+                    if (current.getType() == Material.COMPASS || current.getType() == Material.RECOVERY_COMPASS || current.getType() == Material.CHORUS_FRUIT) {
                         p.closeInventory();
                         openBannerSelectMenu(p, i);
                         p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
                     } else if (current.getType().name().contains("BANNER")) {
                         p.closeInventory();
-                        teleportToPath(p, "homes." + p.getUniqueId() + "." + i);
+                        teleportWithCooldown(p, "homes." + p.getUniqueId() + "." + i);
                     }
                     return;
                 }
@@ -665,7 +732,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                 openHomeMenu(p);
             } else {
-                pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
+                // Bestimme Dimension anhand der Welt, in der der Spieler steht
+                String env = p.getWorld().getEnvironment().name();
+                String dim = "OVERWORLD";
+                if (env.contains("NETHER")) dim = "NETHER";
+                else if (env.contains("THE_END")) dim = "END";
+
+                pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation(), dim));
                 p.closeInventory();
                 p.sendMessage(ChatColor.YELLOW + "========================================");
                 p.sendMessage(ChatColor.GREEN + "Gib nun den Namen für dein Home in den Chat ein.");
@@ -686,6 +759,20 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.sendMessage(ChatColor.GREEN + homeName + " ist nun dein Main-Home!");
                 p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
                 openSettingsMenu(p, homeIndex);
+            } else if (event.getSlot() == 13 && p.hasPermission("bannerhomes.admin")) { // Dimensionswechsel für Admins
+                String uuidStr = p.getUniqueId().toString();
+                String path = "homes." + uuidStr + "." + homeIndex;
+                String currentDim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+
+                String nextDim = "OVERWORLD";
+                if (currentDim.equals("OVERWORLD")) nextDim = "NETHER";
+                else if (currentDim.equals("NETHER")) nextDim = "END";
+                else if (currentDim.equals("END")) nextDim = "OVERWORLD";
+
+                dataConfig.set(path + ".dimension", nextDim);
+                saveDataConfig();
+                p.playSound(p.getLocation(), Sound.ITEM_ARMOR_EQUIP_LEATHER, 1.0f, 1.0f);
+                openSettingsMenu(p, homeIndex);
             } else if (event.getSlot() == 15) { // Löschen Button -> Bestätigen
                 p.closeInventory();
                 openConfirmDeleteMenu(p, homeIndex);
@@ -700,10 +787,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             int homeIndex = Integer.parseInt(title.substring(openBracket + 1, closeBracket));
 
-            if (event.getSlot() == 13 && current.getType() == Material.GREEN_WOOL) {
+            if (event.getSlot() == 12 && current.getType() == Material.GREEN_WOOL) {
                 p.closeInventory();
                 deleteHomeByIndex(p, homeIndex);
-            } else if (event.getSlot() == 15 && current.getType() == Material.RED_WOOL) {
+            } else if (event.getSlot() == 14 && current.getType() == Material.RED_WOOL) {
                 p.closeInventory();
                 openHomeMenu(p);
             }
@@ -733,7 +820,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         return -1;
     }
 
-    // ===== CHAT EINGABE (NUR NOCH FÜR NAMEN BEIM ERSTELLEN) =====
+    // ===== CHAT EINGABE =====
 
     @EventHandler
     public void onChat(AsyncPlayerChatEvent event) {
@@ -761,6 +848,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 dataConfig.set(path + ".name", homeName);
                 dataConfig.set(path + ".bannerItem", pending.bannerItem);
                 dataConfig.set(path + ".isMain", isFirst);
+                dataConfig.set(path + ".dimension", pending.dimension);
                 dataConfig.set(path + ".world", loc.getWorld().getName());
                 dataConfig.set(path + ".x", loc.getX());
                 dataConfig.set(path + ".y", loc.getY());
@@ -780,6 +868,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     public void onQuit(PlayerQuitEvent event) {
         pendingHomes.remove(event.getPlayer().getUniqueId());
         pendingDeletes.remove(event.getPlayer().getUniqueId());
+        lastTeleportTimes.remove(event.getPlayer().getUniqueId());
     }
 
     // ===== TAB COMPLETER =====
