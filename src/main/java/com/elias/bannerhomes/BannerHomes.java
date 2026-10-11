@@ -80,7 +80,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.3 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.4 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -415,7 +415,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // NEU: Copper-Lampe (COPPER_BULB) wenn Main-Home aktiv, sonst Redstone-Torch (REDSTONE_TORCH)
         ItemStack mainItem = new ItemStack(isMain ? Material.COPPER_BULB : Material.REDSTONE_TORCH);
         ItemMeta mainMeta = mainItem.getItemMeta();
         if (mainMeta != null) {
@@ -1062,7 +1061,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (current != null && current.getType().name().contains("BANNER")) {
                 ItemStack chosenBanner = cleanBannerItem(current);
 
-                String path = "homes." + uuidStr + "." + slotIndex; // Korrektur zu uuidStr / p.getUniqueId()
                 String playerUuidStr = p.getUniqueId().toString();
                 String targetPath = "homes." + playerUuidStr + "." + slotIndex;
 
