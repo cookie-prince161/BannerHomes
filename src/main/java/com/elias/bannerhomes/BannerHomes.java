@@ -17,6 +17,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -80,7 +81,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.8 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.9 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -415,7 +416,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // Verwendet Material.SOUL_TORCH (Seelenfackel) als Main-Home Indikator
         ItemStack mainItem = new ItemStack(isMain ? Material.SOUL_TORCH : Material.REDSTONE_TORCH);
         ItemMeta mainMeta = mainItem.getItemMeta();
         if (mainMeta != null) {
@@ -957,6 +957,17 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     }
 
     // ===== EVENTS =====
+
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        Player p = event.getEntity();
+        UUID id = p.getUniqueId();
+
+        // Resettet alle Teleport-Cooldowns bei Tod
+        lastHomeTeleportTimes.remove(id);
+        lastSpawnTeleportTimes.remove(id);
+        lastSdTeleportTimes.remove(id);
+    }
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
