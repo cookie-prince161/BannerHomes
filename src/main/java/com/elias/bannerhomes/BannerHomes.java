@@ -80,7 +80,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.5 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.6 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -415,8 +415,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // Geändert zu COPPER_TORCH wenn Main-Home aktiv, sonst REDSTONE_TORCH
-        ItemStack mainItem = new ItemStack(isMain ? Material.COPPER_TORCH : Material.REDSTONE_TORCH);
+        // Verwendet nun Material.LIGHTNING_ROD (aus Kupfer gefertigt) als Main-Home Indikator
+        ItemStack mainItem = new ItemStack(isMain ? Material.LIGHTNING_ROD : Material.REDSTONE_TORCH);
         ItemMeta mainMeta = mainItem.getItemMeta();
         if (mainMeta != null) {
             mainMeta.setDisplayName(isMain ? ChatColor.GREEN + "✔ Main-Home (Aktiv)" : ChatColor.RED + "✖ Kein Main-Home");
