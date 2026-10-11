@@ -35,10 +35,10 @@ import java.util.UUID;
 public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
     private static final String GUI_MAIN_TITLE = ChatColor.DARK_BLUE + "Deine Homes";
+    private static final String GUI_ADMIN_TITLE = ChatColor.DARK_RED + "Admin: Homes Settings";
     private static final String GUI_BANNER_TITLE = ChatColor.DARK_PURPLE + "Wähle eine Bannerfarbe";
     private static final String GUI_SETTINGS_PREFIX = ChatColor.DARK_GRAY + "Einstellungen: ";
     private static final String GUI_CONFIRM_PREFIX = ChatColor.DARK_RED + "Löschen bestätigen: ";
-    private static final String GUI_DIM_PREFIX = ChatColor.DARK_AQUA + "Dimension wählen [Slot ";
 
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
@@ -69,6 +69,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (getCommand("homes") != null) {
             getCommand("homes").setExecutor(this);
             getCommand("homes").setTabCompleter(this);
+        }
+        if (getCommand("homesettings") != null) {
+            getCommand("homesettings").setExecutor(this);
         }
         if (getCommand("home") != null) {
             getCommand("home").setExecutor(this);
@@ -116,7 +119,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             case 2: return new int[]{12, 14};
             case 3: return new int[]{11, 13, 15};
             case 4: return new int[]{10, 12, 14, 16};
-            default: return new int[]{};
+            case 5: return new int[]{9, 11, 13, 15, 17};
+            default: return new int[]{11, 13, 15};
         }
     }
 
@@ -187,40 +191,31 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Freier Slot: Kompass in der Mitte
-                ItemStack compass = new ItemStack(Material.COMPASS);
-                ItemMeta meta = compass.getItemMeta();
+                // Freier Slot: Dimensions-Item (Kompass, Recovery-Kompass oder Chorus-Frucht)
+                String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+                ItemStack placeholder;
+                String dimLabel;
+
+                if (dim.equals("NETHER")) {
+                    placeholder = new ItemStack(Material.RECOVERY_COMPASS);
+                    dimLabel = "Nether";
+                } else if (dim.equals("END")) {
+                    placeholder = new ItemStack(Material.CHORUS_FRUIT);
+                    dimLabel = "End";
+                } else {
+                    placeholder = new ItemStack(Material.COMPASS);
+                    dimLabel = "Overworld";
+                }
+
+                ItemMeta meta = placeholder.getItemMeta();
                 if (meta != null) {
-                    meta.setDisplayName(ChatColor.YELLOW + "Home-Slot " + (i + 1) + " " + ChatColor.GRAY + "(Frei)");
+                    meta.setDisplayName(ChatColor.YELLOW + "Home-Slot " + (i + 1) + " " + ChatColor.GRAY + "(" + dimLabel + ")");
                     List<String> lore = new ArrayList<>();
                     lore.add(ChatColor.GRAY + "Klicke, um ein Home zu erstellen");
                     meta.setLore(lore);
-                    compass.setItemMeta(meta);
+                    placeholder.setItemMeta(meta);
                 }
-                inv.setItem(slot, compass);
-
-                // Unter dem Kompass (Slot + 9): Dimensions-Auswahl-Button
-                String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
-                Material dimMat = Material.SLIME_BLOCK;
-                String dimName = "Overworld";
-                if (dim.equals("NETHER")) {
-                    dimMat = Material.MAGMA_BLOCK;
-                    dimName = "Nether";
-                } else if (dim.equals("END")) {
-                    dimMat = Material.SCULK;
-                    dimName = "End";
-                }
-
-                ItemStack dimButton = new ItemStack(dimMat);
-                ItemMeta dimMeta = dimButton.getItemMeta();
-                if (dimMeta != null) {
-                    dimMeta.setDisplayName(ChatColor.LIGHT_PURPLE + "Dimension: " + dimName);
-                    List<String> lore = new ArrayList<>();
-                    lore.add(ChatColor.GRAY + "Klicke, um die Dimension zu ändern.");
-                    dimMeta.setLore(lore);
-                    dimButton.setItemMeta(dimMeta);
-                }
-                inv.setItem(slot + 9, dimButton);
+                inv.setItem(slot, placeholder);
             }
         }
 
@@ -228,44 +223,52 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
 
-    public void openDimensionSelectMenu(Player p, int slotIndex) {
+    public void openAdminSettingsMenu(Player p) {
+        int maxHomes = getConfig().getInt("max-homes", 3);
+        if (maxHomes <= 0) maxHomes = 1;
+
+        Inventory inv = Bukkit.createInventory(null, 27, GUI_ADMIN_TITLE);
+        int[] slots = getSlotsForAmount(maxHomes);
         String uuidStr = p.getUniqueId().toString();
-        String currentDim = dataConfig.getString("homes." + uuidStr + "." + slotIndex + ".dimension", "OVERWORLD");
 
-        Inventory inv = Bukkit.createInventory(null, 27, GUI_DIM_PREFIX + (slotIndex + 1) + "]");
+        for (int i = 0; i < slots.length; i++) {
+            int slot = slots[i];
+            String path = "homes." + uuidStr + "." + i;
+            String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
 
-        // Slots 13, 14, 15: Slime, Magma, Sculk
-        ItemStack overworld = new ItemStack(Material.SLIME_BLOCK);
-        ItemMeta owMeta = overworld.getItemMeta();
-        if (owMeta != null) {
-            owMeta.setDisplayName(ChatColor.GREEN + "Overworld");
-            overworld.setItemMeta(owMeta);
+            // Kompass / Item in oberer Reihe
+            ItemStack item;
+            if (dim.equals("NETHER")) item = new ItemStack(Material.RECOVERY_COMPASS);
+            else if (dim.equals("END")) item = new ItemStack(Material.CHORUS_FRUIT);
+            else item = new ItemStack(Material.COMPASS);
+
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(ChatColor.GOLD + "Slot " + (i + 1) + " - Dimension: " + dim);
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Klicke, um Dimension zu wechseln");
+                meta.setLore(lore);
+                item.setItemMeta(meta);
+            }
+            inv.setItem(slot, item);
+
+            // Block-Indikator in unterer Reihe (Slot + 9)
+            ItemStack blockItem;
+            if (dim.equals("NETHER")) blockItem = new ItemStack(Material.NETHERRACK);
+            else if (dim.equals("END")) blockItem = new ItemStack(Material.END_STONE);
+            else blockItem = new ItemStack(Material.GRASS_BLOCK);
+
+            ItemMeta bMeta = blockItem.getItemMeta();
+            if (bMeta != null) {
+                bMeta.setDisplayName(ChatColor.LIGHT_PURPLE + "Dimension: " + dim);
+                blockItem.setItemMeta(bMeta);
+            }
+            inv.setItem(slot + 9, blockItem);
         }
-        inv.setItem(13, overworld);
-
-        ItemStack nether = new ItemStack(Material.MAGMA_BLOCK);
-        ItemMeta neMeta = nether.getItemMeta();
-        if (neMeta != null) {
-            neMeta.setDisplayName(ChatColor.RED + "Nether");
-            nether.setItemMeta(neMeta);
-        }
-        inv.setItem(14, nether);
-
-        ItemStack end = new ItemStack(Material.SCULK);
-        ItemMeta endMeta = end.getItemMeta();
-        if (endMeta != null) {
-            endMeta.setDisplayName(ChatColor.DARK_PURPLE + "End");
-            end.setItemMeta(endMeta);
-        }
-        inv.setItem(15, end);
-
-        // Slots 22, 23, 24: Rot/Grüne Glasscheiben darunter
-        inv.setItem(22, new ItemStack(currentDim.equals("OVERWORLD") ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE));
-        inv.setItem(23, new ItemStack(currentDim.equals("NETHER") ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE));
-        inv.setItem(24, new ItemStack(currentDim.equals("END") ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE));
 
         inv.setItem(26, getBackButton());
         p.openInventory(inv);
+        p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
 
     public void openBannerSelectMenu(Player p, int slotIndex) {
@@ -329,7 +332,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // Main-Home Torch (Slot 11)
         ItemStack torch = new ItemStack(Material.REDSTONE_TORCH);
         ItemMeta torchMeta = torch.getItemMeta();
         if (torchMeta != null) {
@@ -341,7 +343,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(11, torch);
 
-        // Löschen Button (Slot 15)
         ItemStack del = new ItemStack(Material.LAVA_BUCKET);
         ItemMeta delMeta = del.getItemMeta();
         if (delMeta != null) {
@@ -426,14 +427,22 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         Player p = (Player) sender;
         String cmdName = command.getName().toLowerCase();
 
+        if (cmdName.equals("homesettings")) {
+            if (!p.hasPermission("bannerhomes.admin")) {
+                p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
+                return true;
+            }
+            openAdminSettingsMenu(p);
+            return true;
+        }
+
         if (cmdName.equals("homes")) {
-            // Admin-Befehle: /homes setmax <0-4> oder /homes cooldown <Sekunden>
             if (args.length >= 2 && p.hasPermission("bannerhomes.admin")) {
                 if (args[0].equalsIgnoreCase("setmax")) {
                     try {
                         int max = Integer.parseInt(args[1]);
-                        if (max < 0 || max > 4) {
-                            p.sendMessage(ChatColor.RED + "Bitte eine Zahl zwischen 0 und 4 angeben.");
+                        if (max < 0 || max > 5) {
+                            p.sendMessage(ChatColor.RED + "Bitte eine Zahl zwischen 0 und 5 angeben.");
                             return true;
                         }
                         getConfig().set("max-homes", max);
@@ -691,9 +700,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         String title = event.getView().getTitle();
-        if (!title.equals(GUI_MAIN_TITLE) && !title.equals(GUI_BANNER_TITLE)
-                && !title.startsWith(GUI_SETTINGS_PREFIX) && !title.startsWith(GUI_CONFIRM_PREFIX)
-                && !title.startsWith(GUI_DIM_PREFIX)) {
+        if (!title.equals(GUI_MAIN_TITLE) && !title.equals(GUI_ADMIN_TITLE)
+                && !title.equals(GUI_BANNER_TITLE)
+                && !title.startsWith(GUI_SETTINGS_PREFIX) && !title.startsWith(GUI_CONFIRM_PREFIX)) {
             return;
         }
 
@@ -715,7 +724,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int maxHomes = getConfig().getInt("max-homes", 3);
         int[] slots = getSlotsForAmount(maxHomes);
 
-        // Banner-Import in Slot 18
         if (title.equals(GUI_BANNER_TITLE) && event.getSlot() == 18) {
             ItemStack cursor = event.getCursor();
             if (cursor != null && cursor.getType().name().contains("BANNER")) {
@@ -730,7 +738,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         ItemStack current = event.getCurrentItem();
         if (current == null || current.getType() == Material.AIR) return;
 
-        // Zurück-Button (Slot 26)
         if (event.getSlot() == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
             openHomeMenu(p);
@@ -752,7 +759,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     return;
                 }
                 if (slot == baseSlot) {
-                    if (current.getType() == Material.COMPASS) {
+                    if (current.getType() == Material.COMPASS || current.getType() == Material.RECOVERY_COMPASS || current.getType() == Material.CHORUS_FRUIT) {
                         p.closeInventory();
                         openBannerSelectMenu(p, i);
                         p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
@@ -763,44 +770,36 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     return;
                 }
                 if (slot == baseSlot + 9) {
-                    // Klick auf das Dimensions-Auswahl-Item (unter dem Kompass für freie Slots)
-                    String path = "homes." + p.getUniqueId().toString() + "." + i;
-                    if (!dataConfig.contains(path + ".name")) {
-                        p.closeInventory();
-                        openDimensionSelectMenu(p, i);
-                        p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                        return;
-                    } else {
-                        p.closeInventory();
-                        openSettingsMenu(p, i);
-                        p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                        return;
-                    }
+                    p.closeInventory();
+                    openSettingsMenu(p, i);
+                    p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
+                    return;
                 }
             }
         }
 
-        // 2. DIMENSIONS-AUSWAHL-MENÜ
-        else if (title.startsWith(GUI_DIM_PREFIX)) {
-            int openBracket = title.lastIndexOf("[");
-            int closeBracket = title.lastIndexOf("]");
-            if (openBracket == -1 || closeBracket == -1) return;
+        // 2. ADMIN-SETTINGS-MENÜ (/homesettings)
+        else if (title.equals(GUI_ADMIN_TITLE)) {
+            int slot = event.getSlot();
 
-            int slotIndex = Integer.parseInt(title.substring(openBracket + 1, closeBracket - 1)) - 1;
-            String uuidStr = p.getUniqueId().toString();
-            String path = "homes." + uuidStr + "." + slotIndex;
+            for (int i = 0; i < slots.length; i++) {
+                int baseSlot = slots[i];
+                if (slot == baseSlot || slot == baseSlot + 9) {
+                    String uuidStr = p.getUniqueId().toString();
+                    String path = "homes." + uuidStr + "." + i;
+                    String currentDim = dataConfig.getString(path + ".dimension", "OVERWORLD");
 
-            String chosenDim = null;
-            int clicked = event.getSlot();
-            if (clicked == 13 || clicked == 22) chosenDim = "OVERWORLD";
-            else if (clicked == 14 || clicked == 23) chosenDim = "NETHER";
-            else if (clicked == 15 || clicked == 24) chosenDim = "END";
+                    String nextDim = "OVERWORLD";
+                    if (currentDim.equals("OVERWORLD")) nextDim = "NETHER";
+                    else if (currentDim.equals("NETHER")) nextDim = "END";
+                    else if (currentDim.equals("END")) nextDim = "OVERWORLD";
 
-            if (chosenDim != null) {
-                dataConfig.set(path + ".dimension", chosenDim);
-                saveDataConfig();
-                p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                openDimensionSelectMenu(p, slotIndex);
+                    dataConfig.set(path + ".dimension", nextDim);
+                    saveDataConfig();
+                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    openAdminSettingsMenu(p);
+                    return;
+                }
             }
         }
 
@@ -965,12 +964,14 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
             }
         } else if (args.length == 2 && args[0].equalsIgnoreCase("setmax") && p.hasPermission("bannerhomes.admin")) {
+            list.add("0");
             list.add("1");
             list.add("2");
             list.add("3");
             list.add("4");
-            list.add("0");
+            list.add("5");
         } else if (args.length == 2 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
+            list.add("30");
             list.add("60");
             list.add("120");
             list.add("300");
