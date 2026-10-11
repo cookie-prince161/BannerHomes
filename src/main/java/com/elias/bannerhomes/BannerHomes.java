@@ -44,7 +44,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
     private final Map<UUID, Integer> pendingLastTeleports = new HashMap<>();
-    private final Map<UUID, Long> lastTeleportTimes = new HashMap<>();
+
+    private final Map<UUID, Long> lastHomeTeleportTimes = new HashMap<>();
+    private final Map<UUID, Long> lastSpawnTeleportTimes = new HashMap<>();
+    private final Map<UUID, Long> lastSdTeleportTimes = new HashMap<>();
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -68,23 +71,21 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         getServer().getPluginManager().registerEvents(this, this);
 
-        if (getCommand("homes") != null) {
-            getCommand("homes").setExecutor(this);
-            getCommand("homes").setTabCompleter(this);
-        }
-        if (getCommand("homesettings") != null) {
-            getCommand("homesettings").setExecutor(this);
-        }
-        if (getCommand("home") != null) {
-            getCommand("home").setExecutor(this);
-            getCommand("home").setTabCompleter(this);
-        }
-        if (getCommand("homedelete") != null) {
-            getCommand("homedelete").setExecutor(this);
-            getCommand("homedelete").setTabCompleter(this);
-        }
+        registerCmd("homes");
+        registerCmd("homesettings");
+        registerCmd("home");
+        registerCmd("homedelete");
+        registerCmd("tp");
+        registerCmd("settp");
 
         getLogger().info("BannerHomes erfolgreich aktiviert!");
+    }
+
+    private void registerCmd(String name) {
+        if (getCommand(name) != null) {
+            getCommand(name).setExecutor(this);
+            getCommand(name).setTabCompleter(this);
+        }
     }
 
     @Override
@@ -92,7 +93,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         pendingHomes.clear();
         pendingDeletes.clear();
         pendingLastTeleports.clear();
-        lastTeleportTimes.clear();
+        lastHomeTeleportTimes.clear();
+        lastSpawnTeleportTimes.clear();
+        lastSdTeleportTimes.clear();
     }
 
     private void loadDataConfig() {
@@ -258,10 +261,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
             inv.setItem(slot, item);
 
+            // Untere Reihe (Indikatoren): Slimeball, Fire Charge, Ender Pearl
             ItemStack blockItem;
-            if (dim.equals("NETHER")) blockItem = new ItemStack(Material.NETHERRACK);
-            else if (dim.equals("END")) blockItem = new ItemStack(Material.END_STONE);
-            else blockItem = new ItemStack(Material.GRASS_BLOCK);
+            if (dim.equals("NETHER")) blockItem = new ItemStack(Material.FIRE_CHARGE);
+            else if (dim.equals("END")) blockItem = new ItemStack(Material.ENDER_PEARL);
+            else blockItem = new ItemStack(Material.SLIME_BALL);
 
             ItemMeta bMeta = blockItem.getItemMeta();
             if (bMeta != null) {
@@ -271,7 +275,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.setItem(slot + 9, blockItem);
         }
 
-        // Zurück-Button oben links (Slot 0), damit Slot 17/26 frei bleibt
         inv.setItem(0, getBackButton());
 
         p.openInventory(inv);
@@ -434,6 +437,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         Player p = (Player) sender;
         String cmdName = command.getName().toLowerCase();
 
+        // Admin-Einstellungsmenü
         if (cmdName.equals("homesettings")) {
             if (!p.hasPermission("bannerhomes.admin")) {
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
@@ -443,6 +447,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
+        // Hauptbefehl /homes
         if (cmdName.equals("homes")) {
             if (args.length >= 2 && p.hasPermission("bannerhomes.admin")) {
                 if (args[0].equalsIgnoreCase("setmax")) {
@@ -461,19 +466,48 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                         return true;
                     }
                 } else if (args[0].equalsIgnoreCase("cooldown")) {
-                    try {
-                        long cd = Long.parseLong(args[1]);
-                        if (cd < 0) {
-                            p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
+                    if (args.length == 3) {
+                        String target = args[1].toLowerCase();
+                        try {
+                            long cd = Long.parseLong(args[2]);
+                            if (cd < 0) {
+                                p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
+                                return true;
+                            }
+                            if (target.equals("spawn")) {
+                                getConfig().set("spawn-cooldown-seconds", cd);
+                                p.sendMessage(ChatColor.GREEN + "Spawn Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
+                            } else if (target.equals("sd") || target.equals("shoppingdistrict")) {
+                                getConfig().set("sd-cooldown-seconds", cd);
+                                p.sendMessage(ChatColor.GREEN + "Shopping District Cooldown auf " + cd + " Sekunden gesetzt.");
+                            } else if (target.equals("homes") || target.equals("home")) {
+                                getConfig().set("teleport-cooldown-seconds", cd);
+                                p.sendMessage(ChatColor.GREEN + "Home Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
+                            } else {
+                                p.sendMessage(ChatColor.RED + "Ungültiger Typ. Nutze: homes, spawn oder sd.");
+                                return true;
+                            }
+                            saveConfig();
+                            return true;
+                        } catch (NumberFormatException e) {
+                            p.sendMessage(ChatColor.RED + "Das ist keine gültige Zahl.");
                             return true;
                         }
-                        getConfig().set("teleport-cooldown-seconds", cd);
-                        saveConfig();
-                        p.sendMessage(ChatColor.GREEN + "Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
-                        return true;
-                    } catch (NumberFormatException e) {
-                        p.sendMessage(ChatColor.RED + "Das ist keine gültige Zahl.");
-                        return true;
+                    } else if (args.length == 2) {
+                        try {
+                            long cd = Long.parseLong(args[1]);
+                            if (cd < 0) {
+                                p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
+                                return true;
+                            }
+                            getConfig().set("teleport-cooldown-seconds", cd);
+                            saveConfig();
+                            p.sendMessage(ChatColor.GREEN + "Home Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
+                            return true;
+                        } catch (NumberFormatException e) {
+                            p.sendMessage(ChatColor.RED + "Benutzung: /homes cooldown [homes|spawn|sd] <Sekunden>");
+                            return true;
+                        }
                     }
                 }
             }
@@ -487,6 +521,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
+        // Löschen Befehl
         if (cmdName.equals("homedelete")) {
             if (args.length == 0) {
                 p.sendMessage(ChatColor.RED + "Benutzung: /homedelete <Name|Nummer>");
@@ -519,6 +554,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
+        // Home Teleport Befehl
         if (cmdName.equals("home")) {
             int maxHomes = getConfig().getInt("max-homes", 3);
             if (maxHomes <= 0) {
@@ -535,7 +571,102 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
+        // NEU: /settp spawn ODER /settp sd
+        if (cmdName.equals("settp")) {
+            if (!p.hasPermission("bannerhomes.admin")) {
+                p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
+                return true;
+            }
+            if (args.length == 0) {
+                p.sendMessage(ChatColor.RED + "Benutzung: /settp <spawn|sd|shoppingdistrict>");
+                return true;
+            }
+
+            String type = args[0].toLowerCase();
+            Location loc = p.getLocation();
+
+            if (type.equals("spawn")) {
+                saveGlobalLocation("global.spawn", loc);
+                p.sendMessage(ChatColor.GREEN + "Spawn-Punkt erfolgreich an deiner Position gesetzt!");
+                p.playSound(loc, Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+            } else if (type.equals("sd") || type.equals("shoppingdistrict")) {
+                saveGlobalLocation("global.sd", loc);
+                p.sendMessage(ChatColor.GREEN + "Shopping District Punkt erfolgreich an deiner Position gesetzt!");
+                p.playSound(loc, Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+            } else {
+                p.sendMessage(ChatColor.RED + "Ungültiger Typ. Nutze 'spawn' oder 'sd'.");
+            }
+            return true;
+        }
+
+        // NEU: /tp spawn ODER /tp sd
+        if (cmdName.equals("tp")) {
+            if (args.length == 0) {
+                p.sendMessage(ChatColor.RED + "Benutzung: /tp <spawn|sd|shoppingdistrict>");
+                return true;
+            }
+
+            String type = args[0].toLowerCase();
+
+            if (type.equals("spawn")) {
+                teleportGlobalWithCooldown(p, "global.spawn", lastSpawnTeleportTimes, "spawn-cooldown-seconds", "Spawn");
+            } else if (type.equals("sd") || type.equals("shoppingdistrict")) {
+                teleportGlobalWithCooldown(p, "global.sd", lastSdTeleportTimes, "sd-cooldown-seconds", "Shopping District");
+            } else {
+                p.sendMessage(ChatColor.RED + "Benutzung: /tp <spawn|sd|shoppingdistrict>");
+            }
+            return true;
+        }
+
         return true;
+    }
+
+    private void saveGlobalLocation(String path, Location loc) {
+        dataConfig.set(path + ".world", loc.getWorld().getName());
+        dataConfig.set(path + ".x", loc.getX());
+        dataConfig.set(path + ".y", loc.getY());
+        dataConfig.set(path + ".z", loc.getZ());
+        dataConfig.set(path + ".yaw", loc.getYaw());
+        dataConfig.set(path + ".pitch", loc.getPitch());
+        saveDataConfig();
+    }
+
+    private void teleportGlobalWithCooldown(Player p, String path, Map<UUID, Long> cooldownMap, String cooldownKey, String label) {
+        if (!dataConfig.contains(path + ".world")) {
+            p.sendMessage(ChatColor.RED + "Der " + label + "-Punkt wurde bisher noch nicht gesetzt!");
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long cooldownSec = getConfig().getLong(cooldownKey, 60);
+        long cooldownMs = cooldownSec * 1000;
+
+        if (cooldownMap.containsKey(p.getUniqueId())) {
+            long lastTime = cooldownMap.get(p.getUniqueId());
+            long diff = now - lastTime;
+            if (diff < cooldownMs) {
+                long remainingSec = (cooldownMs - diff) / 1000;
+                long minutes = remainingSec / 60;
+                long seconds = remainingSec % 60;
+                p.sendMessage(ChatColor.RED + "Du musst noch " + (minutes > 0 ? minutes + "m " : "") + seconds + "s warten, bevor du dich wieder zum " + label + " teleportieren kannst.");
+                p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                return;
+            }
+        }
+
+        Location loc = new Location(
+                Bukkit.getWorld(dataConfig.getString(path + ".world")),
+                dataConfig.getDouble(path + ".x"),
+                dataConfig.getDouble(path + ".y"),
+                dataConfig.getDouble(path + ".z"),
+                (float) dataConfig.getDouble(path + ".yaw"),
+                (float) dataConfig.getDouble(path + ".pitch")
+        );
+
+        p.teleport(loc);
+        cooldownMap.put(p.getUniqueId(), now);
+        p.sendMessage(ChatColor.GREEN + "Teleportiert zum " + label + "!");
+        p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
     private void requestInteractiveDelete(Player p, String arg) {
@@ -578,7 +709,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             TextComponent space = new TextComponent("   ");
 
-            TextComponent noBtn = new TextComponent("§c§l[NEIN]");
+            TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
             noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
 
             promptMsg.addExtra(yesBtn);
@@ -652,12 +783,16 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         String actualHomeDim = (homeWorld != null) ? getDimensionName(homeWorld.getEnvironment()) : "OVERWORLD";
         String adminRequiredDim = dataConfig.getString("admin-slots." + slotIndex + ".dimension", "OVERWORLD");
 
-        // Wenn der Admin die Dimension geändert hat und das Home des Spielers nicht mehr passt
         if (!actualHomeDim.equalsIgnoreCase(adminRequiredDim)) {
             pendingLastTeleports.put(p.getUniqueId(), slotIndex);
 
+            String dimText;
+            if (adminRequiredDim.equalsIgnoreCase("NETHER")) dimText = "zu einem NETHER-Home";
+            else if (adminRequiredDim.equalsIgnoreCase("END")) dimText = "zu einem END-Home";
+            else dimText = "zu einem OVERWORLD-Home";
+
             p.sendMessage(ChatColor.YELLOW + "========================================");
-            p.sendMessage(ChatColor.RED + "Achtung: Dieser Home-Slot wurde vom Admin zu einer " + adminRequiredDim + "-Zone umgeändert.");
+            p.sendMessage(ChatColor.RED + "Achtung: Dieser Home-Slot wurde vom Admin " + dimText + " umgeändert.");
             p.sendMessage(ChatColor.GRAY + "Möchtest du dich ein letztes Mal dorthin teleportieren, um deinen Punkt zu verlegen?");
 
             TextComponent promptMsg = new TextComponent("Einmaliger Teleport: ");
@@ -668,7 +803,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             TextComponent space = new TextComponent("   ");
 
-            TextComponent noBtn = new TextComponent("§c§l[NEIN]");
+            TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
             noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
 
             promptMsg.addExtra(yesBtn);
@@ -681,28 +816,27 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return;
         }
 
-        performTeleport(p, path);
+        performHomeTeleport(p, path);
     }
 
     private void executeLastTeleportAndClear(Player p, int slotIndex) {
         String uuidStr = p.getUniqueId().toString();
         String path = "homes." + uuidStr + "." + slotIndex;
 
-        performTeleport(p, path);
+        performHomeTeleport(p, path);
 
-        // Nach dem letzten Teleport wird das veraltete Home gelöscht
         dataConfig.set(path, null);
         saveDataConfig();
         p.sendMessage(ChatColor.YELLOW + "Der veraltete Home-Punkt wurde entfernt. Du kannst hier nun ein neues Home setzen!");
     }
 
-    private void performTeleport(Player p, String path) {
+    private void performHomeTeleport(Player p, String path) {
         long now = System.currentTimeMillis();
         long cooldownSec = getConfig().getLong("teleport-cooldown-seconds", 120);
         long cooldownMs = cooldownSec * 1000;
 
-        if (lastTeleportTimes.containsKey(p.getUniqueId())) {
-            long lastTime = lastTeleportTimes.get(p.getUniqueId());
+        if (lastHomeTeleportTimes.containsKey(p.getUniqueId())) {
+            long lastTime = lastHomeTeleportTimes.get(p.getUniqueId());
             long diff = now - lastTime;
             if (diff < cooldownMs) {
                 long remainingSec = (cooldownMs - diff) / 1000;
@@ -723,7 +857,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 (float) dataConfig.getDouble(path + ".pitch")
         );
         p.teleport(loc);
-        lastTeleportTimes.put(p.getUniqueId(), now);
+        lastHomeTeleportTimes.put(p.getUniqueId(), now);
 
         String name = dataConfig.getString(path + ".name");
         p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
@@ -797,7 +931,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         ItemStack current = event.getCurrentItem();
         if (current == null || current.getType() == Material.AIR) return;
 
-        // Zurück-Button Klick (Slot 0 in Admin-Settings oder Slot 26 sonst)
         if ((event.getSlot() == 0 || event.getSlot() == 26) && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
             openHomeMenu(p);
@@ -820,7 +953,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
                 if (slot == baseSlot) {
                     if (current.getType() == Material.COMPASS || current.getType() == Material.RECOVERY_COMPASS || current.getType() == Material.CHORUS_FRUIT) {
-                        // Prüfen, ob Spieler in der richtigen Dimension steht!
                         String requiredDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                         String currentDim = getDimensionName(p.getWorld().getEnvironment());
 
@@ -909,12 +1041,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             if (homeIndex == -1) return;
 
-            if (event.getSlot() == 11) { // Redstone Torch -> Main-Home umschalten
+            if (event.getSlot() == 11) {
                 setMainHome(p, homeIndex);
                 p.sendMessage(ChatColor.GREEN + homeName + " ist nun dein Main-Home!");
                 p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
                 openSettingsMenu(p, homeIndex);
-            } else if (event.getSlot() == 15) { // Löschen Button -> Bestätigen
+            } else if (event.getSlot() == 15) {
                 p.closeInventory();
                 openConfirmDeleteMenu(p, homeIndex);
             }
@@ -1009,7 +1141,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         pendingHomes.remove(event.getPlayer().getUniqueId());
         pendingDeletes.remove(event.getPlayer().getUniqueId());
         pendingLastTeleports.remove(event.getPlayer().getUniqueId());
-        lastTeleportTimes.remove(event.getPlayer().getUniqueId());
+        lastHomeTeleportTimes.remove(event.getPlayer().getUniqueId());
+        lastSpawnTeleportTimes.remove(event.getPlayer().getUniqueId());
+        lastSdTeleportTimes.remove(event.getPlayer().getUniqueId());
     }
 
     // ===== TAB COMPLETER =====
@@ -1019,30 +1153,41 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         List<String> list = new ArrayList<>();
         if (!(sender instanceof Player)) return list;
         Player p = (Player) sender;
+        String cmd = command.getName().toLowerCase();
 
-        if (args.length == 1) {
-            String uuidStr = p.getUniqueId().toString();
-            int maxHomes = getConfig().getInt("max-homes", 3);
-            for (int i = 0; i < maxHomes; i++) {
-                String path = "homes." + uuidStr + "." + i;
-                if (dataConfig.contains(path + ".name")) {
-                    list.add(dataConfig.getString(path + ".name"));
-                    list.add(String.valueOf(i + 1));
+        if (cmd.equals("homes")) {
+            if (args.length == 1) {
+                if (p.hasPermission("bannerhomes.admin")) {
+                    list.add("setmax");
+                    list.add("cooldown");
+                }
+            } else if (args.length == 2 && args[0].equalsIgnoreCase("setmax") && p.hasPermission("bannerhomes.admin")) {
+                list.add("0"); list.add("1"); list.add("2"); list.add("3"); list.add("4"); list.add("5");
+            } else if (args.length == 2 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
+                list.add("homes"); list.add("spawn"); list.add("sd");
+            } else if (args.length == 3 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
+                list.add("30"); list.add("60"); list.add("120"); list.add("300");
+            }
+        } else if (cmd.equals("home") || cmd.equals("homedelete")) {
+            if (args.length == 1) {
+                String uuidStr = p.getUniqueId().toString();
+                int maxHomes = getConfig().getInt("max-homes", 3);
+                for (int i = 0; i < maxHomes; i++) {
+                    String path = "homes." + uuidStr + "." + i;
+                    if (dataConfig.contains(path + ".name")) {
+                        list.add(dataConfig.getString(path + ".name"));
+                        list.add(String.valueOf(i + 1));
+                    }
                 }
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("setmax") && p.hasPermission("bannerhomes.admin")) {
-            list.add("0");
-            list.add("1");
-            list.add("2");
-            list.add("3");
-            list.add("4");
-            list.add("5");
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
-            list.add("30");
-            list.add("60");
-            list.add("120");
-            list.add("300");
+        } else if (cmd.equals("tp") || cmd.equals("settp")) {
+            if (args.length == 1) {
+                list.add("spawn");
+                list.add("sd");
+                list.add("shoppingdistrict");
+            }
         }
+
         return list;
     }
 }
