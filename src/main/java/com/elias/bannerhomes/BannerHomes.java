@@ -32,6 +32,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
@@ -78,7 +80,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v1.8.1 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -134,6 +136,18 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         if (env == World.Environment.NETHER) return "NETHER";
         if (env == World.Environment.THE_END) return "END";
         return "OVERWORLD";
+    }
+
+    private int extractSlotIndexFromTitle(String rawTitle) {
+        String cleanTitle = ChatColor.stripColor(rawTitle);
+        Pattern pattern = Pattern.compile("\\[Slot (\\d+)\\]");
+        Matcher matcher = pattern.matcher(cleanTitle);
+        if (matcher.find()) {
+            try {
+                return Integer.parseInt(matcher.group(1)) - 1;
+            } catch (NumberFormatException ignored) {}
+        }
+        return -1;
     }
 
     @SuppressWarnings("unchecked")
@@ -233,7 +247,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Freier Slot: Dimensions-Item
+                // Freier Slot
                 String dim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                 ItemStack placeholder;
                 String dimLabel;
@@ -322,7 +336,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 Material.BLACK_BANNER
         };
 
-        // 1. Standard-Banner einfügen (Slots 0 bis 15)
         int currentSlot = 0;
         for (Material b : standardBanners) {
             ItemStack item = new ItemStack(b);
@@ -337,7 +350,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.setItem(currentSlot++, item);
         }
 
-        // 2. Benutzerdefinierte Banner einfügen
         List<ItemStack> customBanners = getCustomBanners(p);
         for (ItemStack cBanner : customBanners) {
             ItemStack displayBanner = cBanner.clone();
@@ -352,22 +364,21 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.setItem(currentSlot++, displayBanner);
         }
 
-        // 3. Import-Glasscheibe automatisch direkt nach dem letzten Banner platzieren
-        ItemStack importSlot = new ItemStack(Material.LIGHT_GRAY_STAINED_GLASS_PANE);
-        ItemMeta iMeta = importSlot.getItemMeta();
-        if (iMeta != null) {
-            iMeta.setDisplayName(ChatColor.AQUA + "Banner hierhin ziehen / klicken");
-            List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Ziehe ein Banner aus deinem Inventar");
-            lore.add(ChatColor.GRAY + "hierhin, um es als Muster zu speichern.");
-            iMeta.setLore(lore);
-            importSlot.setItemMeta(iMeta);
+        if (currentSlot < 26) {
+            ItemStack importSlot = new ItemStack(Material.LIGHT_GRAY_STAINED_GLASS_PANE);
+            ItemMeta iMeta = importSlot.getItemMeta();
+            if (iMeta != null) {
+                iMeta.setDisplayName(ChatColor.AQUA + "Banner hierhin ziehen / klicken");
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Ziehe ein Banner aus deinem Inventar");
+                lore.add(ChatColor.GRAY + "hierhin, um es als Muster zu speichern.");
+                iMeta.setLore(lore);
+                importSlot.setItemMeta(iMeta);
+            }
+            inv.setItem(currentSlot, importSlot);
         }
-        inv.setItem(currentSlot, importSlot);
 
-        // Zurück-Button auf Slot 26
         inv.setItem(26, getBackButton());
-
         p.openInventory(inv);
     }
 
@@ -924,8 +935,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
         String title = event.getView().getTitle();
+        String cleanTitle = ChatColor.stripColor(title);
+
         if (!title.equals(GUI_MAIN_TITLE) && !title.equals(GUI_ADMIN_TITLE)
-                && !title.startsWith(GUI_BANNER_PREFIX)
+                && !cleanTitle.startsWith("Banner wählen [Slot ")
                 && !title.startsWith(GUI_SETTINGS_PREFIX) && !title.startsWith(GUI_CONFIRM_PREFIX)) {
             return;
         }
@@ -949,32 +962,112 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int[] slots = getSlotsForAmount(maxHomes);
 
         ItemStack current = event.getCurrentItem();
-        if (current == null || current.getType() == Material.AIR) {
-            // Falls auf den Import-Slot geklickt wird während Cursor ein Banner hat
-            if (title.startsWith(GUI_BANNER_PREFIX)) {
-                String numbersOnly = title.replaceAll("[^0-9]", "");
-                if (!numbersOnly.isEmpty()) {
-                    int slotIndex = Integer.parseInt(numbersOnly) - 1;
-                    List<ItemStack> customBanners = getCustomBanners(p);
-                    int importSlotIndex = 16 + customBanners.size();
-                    if (event.getSlot() == importSlotIndex) {
-                        ItemStack cursor = event.getCursor();
-                        if (cursor != null && cursor.getType().name().contains("BANNER")) {
-                            saveCustomBanner(p, cursor);
-                            if (cursor.getAmount() > 1) {
-                                cursor.setAmount(cursor.getAmount() - 1);
-                            } else {
-                                p.setItemOnCursor(null);
-                            }
-                            p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
-                            p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                            openBannerSelectMenu(p, slotIndex);
-                        }
+
+        // Banner-Menü Logik
+        if (cleanTitle.startsWith("Banner wählen [Slot ")) {
+            int slotIndex = extractSlotIndexFromTitle(title);
+            if (slotIndex < 0) return;
+
+            List<ItemStack> customBanners = getCustomBanners(p);
+            int importSlotIndex = 16 + customBanners.size();
+            int clickedSlot = event.getSlot();
+
+            // Klick auf leere Fläche mit Banner am Cursor
+            if ((current == null || current.getType() == Material.AIR) && clickedSlot == importSlotIndex) {
+                ItemStack cursor = event.getCursor();
+                if (cursor != null && cursor.getType().name().contains("BANNER")) {
+                    saveCustomBanner(p, cursor);
+                    if (cursor.getAmount() > 1) {
+                        cursor.setAmount(cursor.getAmount() - 1);
+                    } else {
+                        p.setItemOnCursor(null);
                     }
+                    p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
+                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    openBannerSelectMenu(p, slotIndex);
+                }
+                return;
+            }
+
+            if (current == null || current.getType() == Material.AIR) return;
+
+            // Zurück Button
+            if (clickedSlot == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
+                p.closeInventory();
+                openHomeMenu(p);
+                p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
+                return;
+            }
+
+            // Klick auf Import-Glasscheibe
+            if (clickedSlot == importSlotIndex && current.getType() == Material.LIGHT_GRAY_STAINED_GLASS_PANE) {
+                ItemStack cursor = event.getCursor();
+                if (cursor != null && cursor.getType().name().contains("BANNER")) {
+                    saveCustomBanner(p, cursor);
+                    if (cursor.getAmount() > 1) {
+                        cursor.setAmount(cursor.getAmount() - 1);
+                    } else {
+                        p.setItemOnCursor(null);
+                    }
+                    p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
+                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    openBannerSelectMenu(p, slotIndex);
+                }
+                return;
+            }
+
+            // Custom Banner per Shift-Klick entfernen
+            if (clickedSlot >= 16 && clickedSlot < importSlotIndex) {
+                int customIndex = clickedSlot - 16;
+                if (event.isShiftClick()) {
+                    removeCustomBanner(p, customIndex);
+                    if (current != null && current.getType() != Material.AIR) {
+                        p.getInventory().addItem(current.clone());
+                    }
+                    p.sendMessage(ChatColor.YELLOW + "Benutzerdefiniertes Banner aus der Auswahl entfernt und ins Inventar zurückgelegt.");
+                    p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
+                    openBannerSelectMenu(p, slotIndex);
+                    return;
+                }
+            }
+
+            // Ausgewähltes Banner als Home-Banner festlegen
+            if (current != null && current.getType().name().contains("BANNER")) {
+                ItemStack chosenBanner = current.clone();
+                ItemMeta meta = chosenBanner.getItemMeta();
+                if (meta != null && meta.hasLore()) {
+                    List<String> lore = meta.getLore();
+                    if (lore != null && !lore.isEmpty()) {
+                        lore.removeIf(l -> l.contains("Löschen") || l.contains("Standard-Banner"));
+                        meta.setLore(lore.isEmpty() ? null : lore);
+                        chosenBanner.setItemMeta(meta);
+                    }
+                }
+
+                String path = "homes." + p.getUniqueId() + "." + slotIndex;
+
+                if (dataConfig.contains(path + ".name")) {
+                    // Home exisitert bereits -> Nur Banner-Design aktualisieren!
+                    dataConfig.set(path + ".bannerItem", chosenBanner);
+                    saveDataConfig();
+                    p.closeInventory();
+                    p.sendMessage(ChatColor.GREEN + "Banner-Design für Home '" + dataConfig.getString(path + ".name") + "' erfolgreich geändert!");
+                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+                    openHomeMenu(p);
+                } else {
+                    // Neues Home -> Chat-Aufforderung für Namen starten
+                    pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
+                    p.closeInventory();
+                    p.sendMessage(ChatColor.YELLOW + "========================================");
+                    p.sendMessage(ChatColor.GREEN + "Gib nun den Namen für dein Home in den Chat ein.");
+                    p.sendMessage(ChatColor.YELLOW + "========================================");
+                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                 }
             }
             return;
         }
+
+        if (current == null || current.getType() == Material.AIR) return;
 
         if ((event.getSlot() == 0 || event.getSlot() == 26) && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
@@ -1049,86 +1142,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // 3. BANNER-AUSWAHL
-        else if (title.startsWith(GUI_BANNER_PREFIX)) {
-            String numbersOnly = title.replaceAll("[^0-9]", "");
-            if (numbersOnly.isEmpty()) return;
-            int slotIndex = Integer.parseInt(numbersOnly) - 1;
-
-            int clickedSlot = event.getSlot();
-            List<ItemStack> customBanners = getCustomBanners(p);
-            int importSlotIndex = 16 + customBanners.size();
-
-            // Klick auf Import-Slot
-            if (clickedSlot == importSlotIndex) {
-                ItemStack cursor = event.getCursor();
-                if (cursor != null && cursor.getType().name().contains("BANNER")) {
-                    saveCustomBanner(p, cursor);
-                    if (cursor.getAmount() > 1) {
-                        cursor.setAmount(cursor.getAmount() - 1);
-                    } else {
-                        p.setItemOnCursor(null);
-                    }
-                    p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openBannerSelectMenu(p, slotIndex);
-                }
-                return;
-            }
-
-            // Klick auf benutzerdefiniertes Banner (Slots 16 bis importSlotIndex - 1)
-            if (clickedSlot >= 16 && clickedSlot < importSlotIndex) {
-                int customIndex = clickedSlot - 16;
-                if (event.isShiftClick()) {
-                    removeCustomBanner(p, customIndex);
-                    if (current != null && current.getType() != Material.AIR) {
-                        p.getInventory().addItem(current.clone());
-                    }
-                    p.sendMessage(ChatColor.YELLOW + "Benutzerdefiniertes Banner aus der Auswahl entfernt und ins Inventar zurückgelegt.");
-                    p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
-                    openBannerSelectMenu(p, slotIndex);
-                    return;
-                }
-            }
-
-            // Auswahl eines Banners (Standard oder Custom)
-            if (current != null && current.getType().name().contains("BANNER")) {
-                ItemStack chosenBanner = current.clone();
-                ItemMeta meta = chosenBanner.getItemMeta();
-                if (meta != null && meta.hasLore()) {
-                    List<String> lore = meta.getLore();
-                    // Entferne die angehängte "Löschen"-Lore Zeile vor dem Speichern im Home
-                    if (!lore.isEmpty() && lore.get(lore.size() - 1).contains("Löschen")) {
-                        lore.remove(lore.size() - 1);
-                        if (!lore.isEmpty() && lore.get(lore.size() - 1).isEmpty()) {
-                            lore.remove(lore.size() - 1);
-                        }
-                        meta.setLore(lore.isEmpty() ? null : lore);
-                        chosenBanner.setItemMeta(meta);
-                    }
-                }
-
-                String path = "homes." + p.getUniqueId() + "." + slotIndex;
-
-                if (dataConfig.contains(path + ".name")) {
-                    dataConfig.set(path + ".bannerItem", chosenBanner);
-                    saveDataConfig();
-                    p.closeInventory();
-                    p.sendMessage(ChatColor.GREEN + "Banner-Design erfolgreich geändert!");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openHomeMenu(p);
-                } else {
-                    pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
-                    p.closeInventory();
-                    p.sendMessage(ChatColor.YELLOW + "========================================");
-                    p.sendMessage(ChatColor.GREEN + "Gib nun den Namen für dein Home in den Chat ein.");
-                    p.sendMessage(ChatColor.YELLOW + "========================================");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                }
-            }
-        }
-
-        // 4. EINSTELLUNGEN
+        // 3. EINSTELLUNGEN
         else if (title.startsWith(GUI_SETTINGS_PREFIX)) {
             String homeName = title.replace(GUI_SETTINGS_PREFIX, "");
             int homeIndex = getHomeIndexByName(p, homeName);
@@ -1146,7 +1160,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // 5. LÖSCHEN BESTÄTIGEN
+        // 4. LÖSCHEN BESTÄTIGEN
         else if (title.startsWith(GUI_CONFIRM_PREFIX)) {
             int openBracket = title.lastIndexOf("[");
             int closeBracket = title.lastIndexOf("]");
