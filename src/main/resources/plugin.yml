@@ -1,8 +1,8 @@
 name: BannerHomes
-version: 1.8.8
+version: 1.8.9
 main: com.elias.bannerhomes.BannerHomes
 api-version: '1.21'
-description: Visuelles Home-System mit Soul-Torch Main-Home, Banner-Bereinigung, Spawn & SD.
+description: Visuelles Home-System mit Soul-Torch Main-Home, Cooldown-Reset bei Tod, Banner-Bereinigung, Spawn & SD.
 
 commands:
   homes:
