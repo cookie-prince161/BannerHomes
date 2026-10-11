@@ -7,6 +7,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -42,6 +43,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
+    private final Map<UUID, Integer> pendingLastTeleports = new HashMap<>();
     private final Map<UUID, Long> lastTeleportTimes = new HashMap<>();
 
     private File dataFile;
@@ -89,6 +91,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     public void onDisable() {
         pendingHomes.clear();
         pendingDeletes.clear();
+        pendingLastTeleports.clear();
         lastTeleportTimes.clear();
     }
 
@@ -122,6 +125,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             case 5: return new int[]{9, 11, 13, 15, 17};
             default: return new int[]{11, 13, 15};
         }
+    }
+
+    private String getDimensionName(World.Environment env) {
+        if (env == World.Environment.NETHER) return "NETHER";
+        if (env == World.Environment.THE_END) return "END";
+        return "OVERWORLD";
     }
 
     // ===== GUIS =====
@@ -191,8 +200,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Freier Slot: Dimensions-Item (Kompass, Recovery-Kompass oder Chorus-Frucht)
-                String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+                // Freier Slot: Dimensions-Item
+                String dim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                 ItemStack placeholder;
                 String dimLabel;
 
@@ -229,14 +238,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_ADMIN_TITLE);
         int[] slots = getSlotsForAmount(maxHomes);
-        String uuidStr = p.getUniqueId().toString();
 
         for (int i = 0; i < slots.length; i++) {
             int slot = slots[i];
-            String path = "homes." + uuidStr + "." + i;
-            String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+            String dim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
 
-            // Kompass / Item in oberer Reihe
             ItemStack item;
             if (dim.equals("NETHER")) item = new ItemStack(Material.RECOVERY_COMPASS);
             else if (dim.equals("END")) item = new ItemStack(Material.CHORUS_FRUIT);
@@ -252,7 +258,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
             inv.setItem(slot, item);
 
-            // Block-Indikator in unterer Reihe (Slot + 9)
             ItemStack blockItem;
             if (dim.equals("NETHER")) blockItem = new ItemStack(Material.NETHERRACK);
             else if (dim.equals("END")) blockItem = new ItemStack(Material.END_STONE);
@@ -266,7 +271,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.setItem(slot + 9, blockItem);
         }
 
-        inv.setItem(26, getBackButton());
+        // Zurück-Button oben links (Slot 0), damit Slot 17/26 frei bleibt
+        inv.setItem(0, getBackButton());
+
         p.openInventory(inv);
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
@@ -491,6 +498,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     if (pendingDeletes.containsKey(p.getUniqueId()) && pendingDeletes.get(p.getUniqueId()) == index) {
                         pendingDeletes.remove(p.getUniqueId());
                         deleteHomeByIndex(p, index);
+                    } else if (pendingLastTeleports.containsKey(p.getUniqueId()) && pendingLastTeleports.get(p.getUniqueId()) == index) {
+                        pendingLastTeleports.remove(p.getUniqueId());
+                        executeLastTeleportAndClear(p, index);
                     } else {
                         p.sendMessage(ChatColor.RED + "Ungültige oder abgelaufene Anfrage.");
                     }
@@ -500,12 +510,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 return true;
             }
             if (args[0].equalsIgnoreCase("cancel")) {
-                if (pendingDeletes.containsKey(p.getUniqueId())) {
-                    pendingDeletes.remove(p.getUniqueId());
-                    p.sendMessage(ChatColor.YELLOW + "Löschvorgang abgebrochen.");
-                } else {
-                    p.sendMessage(ChatColor.YELLOW + "Kein aktiver Löschvorgang gefunden.");
-                }
+                pendingDeletes.remove(p.getUniqueId());
+                pendingLastTeleports.remove(p.getUniqueId());
+                p.sendMessage(ChatColor.YELLOW + "Vorgang abgebrochen.");
                 return true;
             }
             requestInteractiveDelete(p, args[0]);
@@ -520,7 +527,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
 
             if (args.length == 0) {
-                teleportWithCooldown(p, getMainHomePath(p));
+                teleportWithValidation(p, getMainHomeIndex(p));
                 return true;
             } else {
                 teleportToHomeByArg(p, args[0]);
@@ -586,14 +593,110 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
     }
 
-    // ===== TELEPORT LOGIK & COOLDOWN =====
+    // ===== TELEPORT VALIDIERUNG & OVERRIDE =====
 
-    private void teleportWithCooldown(Player p, String path) {
-        if (path == null) {
+    private void teleportToHomeByArg(Player p, String arg) {
+        String uuidStr = p.getUniqueId().toString();
+        int maxHomes = getConfig().getInt("max-homes", 3);
+
+        try {
+            int num = Integer.parseInt(arg) - 1;
+            if (num >= 0 && num < maxHomes) {
+                if (dataConfig.contains("homes." + uuidStr + "." + num + ".name")) {
+                    teleportWithValidation(p, num);
+                    return;
+                }
+            }
+        } catch (NumberFormatException ignored) {}
+
+        for (int i = 0; i < maxHomes; i++) {
+            String path = "homes." + uuidStr + "." + i;
+            if (dataConfig.contains(path + ".name")) {
+                String name = dataConfig.getString(path + ".name");
+                if (name != null && name.equalsIgnoreCase(arg)) {
+                    teleportWithValidation(p, i);
+                    return;
+                }
+            }
+        }
+
+        p.sendMessage(ChatColor.RED + "Home '" + arg + "' wurde nicht gefunden.");
+    }
+
+    private int getMainHomeIndex(Player p) {
+        String uuidStr = p.getUniqueId().toString();
+        int maxHomes = getConfig().getInt("max-homes", 3);
+
+        for (int i = 0; i < maxHomes; i++) {
+            String path = "homes." + uuidStr + "." + i;
+            if (dataConfig.contains(path + ".name") && dataConfig.getBoolean(path + ".isMain", false)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private void teleportWithValidation(Player p, int slotIndex) {
+        if (slotIndex == -1) {
             p.sendMessage(ChatColor.RED + "Du hast noch kein Main-Home festgelegt! Öffne /homes zum Einstellen.");
             return;
         }
 
+        String uuidStr = p.getUniqueId().toString();
+        String path = "homes." + uuidStr + "." + slotIndex;
+
+        if (!dataConfig.contains(path + ".world")) return;
+
+        String homeWorldName = dataConfig.getString(path + ".world");
+        World homeWorld = Bukkit.getWorld(homeWorldName);
+        String actualHomeDim = (homeWorld != null) ? getDimensionName(homeWorld.getEnvironment()) : "OVERWORLD";
+        String adminRequiredDim = dataConfig.getString("admin-slots." + slotIndex + ".dimension", "OVERWORLD");
+
+        // Wenn der Admin die Dimension geändert hat und das Home des Spielers nicht mehr passt
+        if (!actualHomeDim.equalsIgnoreCase(adminRequiredDim)) {
+            pendingLastTeleports.put(p.getUniqueId(), slotIndex);
+
+            p.sendMessage(ChatColor.YELLOW + "========================================");
+            p.sendMessage(ChatColor.RED + "Achtung: Dieser Home-Slot wurde vom Admin zu einer " + adminRequiredDim + "-Zone umgeändert.");
+            p.sendMessage(ChatColor.GRAY + "Möchtest du dich ein letztes Mal dorthin teleportieren, um deinen Punkt zu verlegen?");
+
+            TextComponent promptMsg = new TextComponent("Einmaliger Teleport: ");
+            promptMsg.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+
+            TextComponent yesBtn = new TextComponent("§a§l[JA]");
+            yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + slotIndex));
+
+            TextComponent space = new TextComponent("   ");
+
+            TextComponent noBtn = new TextComponent("§c§l[NEIN]");
+            noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
+
+            promptMsg.addExtra(yesBtn);
+            promptMsg.addExtra(space);
+            promptMsg.addExtra(noBtn);
+
+            p.spigot().sendMessage(promptMsg);
+            p.sendMessage(ChatColor.YELLOW + "========================================");
+            p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
+            return;
+        }
+
+        performTeleport(p, path);
+    }
+
+    private void executeLastTeleportAndClear(Player p, int slotIndex) {
+        String uuidStr = p.getUniqueId().toString();
+        String path = "homes." + uuidStr + "." + slotIndex;
+
+        performTeleport(p, path);
+
+        // Nach dem letzten Teleport wird das veraltete Home gelöscht
+        dataConfig.set(path, null);
+        saveDataConfig();
+        p.sendMessage(ChatColor.YELLOW + "Der veraltete Home-Punkt wurde entfernt. Du kannst hier nun ein neues Home setzen!");
+    }
+
+    private void performTeleport(Player p, String path) {
         long now = System.currentTimeMillis();
         long cooldownSec = getConfig().getLong("teleport-cooldown-seconds", 120);
         long cooldownMs = cooldownSec * 1000;
@@ -611,64 +714,20 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        if (dataConfig.contains(path + ".world")) {
-            Location loc = new Location(
-                    Bukkit.getWorld(dataConfig.getString(path + ".world")),
-                    dataConfig.getDouble(path + ".x"),
-                    dataConfig.getDouble(path + ".y"),
-                    dataConfig.getDouble(path + ".z"),
-                    (float) dataConfig.getDouble(path + ".yaw"),
-                    (float) dataConfig.getDouble(path + ".pitch")
-            );
-            p.teleport(loc);
-            lastTeleportTimes.put(p.getUniqueId(), now);
+        Location loc = new Location(
+                Bukkit.getWorld(dataConfig.getString(path + ".world")),
+                dataConfig.getDouble(path + ".x"),
+                dataConfig.getDouble(path + ".y"),
+                dataConfig.getDouble(path + ".z"),
+                (float) dataConfig.getDouble(path + ".yaw"),
+                (float) dataConfig.getDouble(path + ".pitch")
+        );
+        p.teleport(loc);
+        lastTeleportTimes.put(p.getUniqueId(), now);
 
-            String name = dataConfig.getString(path + ".name");
-            p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
-            p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
-        }
-    }
-
-    private String getMainHomePath(Player p) {
-        String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
-
-        for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name") && dataConfig.getBoolean(path + ".isMain", false)) {
-                return path;
-            }
-        }
-        return null;
-    }
-
-    private void teleportToHomeByArg(Player p, String arg) {
-        String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
-
-        try {
-            int num = Integer.parseInt(arg) - 1;
-            if (num >= 0 && num < maxHomes) {
-                String path = "homes." + uuidStr + "." + num;
-                if (dataConfig.contains(path + ".name")) {
-                    teleportWithCooldown(p, path);
-                    return;
-                }
-            }
-        } catch (NumberFormatException ignored) {}
-
-        for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name")) {
-                String name = dataConfig.getString(path + ".name");
-                if (name != null && name.equalsIgnoreCase(arg)) {
-                    teleportWithCooldown(p, path);
-                    return;
-                }
-            }
-        }
-
-        p.sendMessage(ChatColor.RED + "Home '" + arg + "' wurde nicht gefunden.");
+        String name = dataConfig.getString(path + ".name");
+        p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
+        p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
     private void deleteHomeByIndex(Player p, int targetIndex) {
@@ -738,7 +797,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         ItemStack current = event.getCurrentItem();
         if (current == null || current.getType() == Material.AIR) return;
 
-        if (event.getSlot() == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
+        // Zurück-Button Klick (Slot 0 in Admin-Settings oder Slot 26 sonst)
+        if ((event.getSlot() == 0 || event.getSlot() == 26) && current.getType() == Material.RED_STAINED_GLASS_PANE) {
             p.closeInventory();
             openHomeMenu(p);
             p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
@@ -760,12 +820,23 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
                 if (slot == baseSlot) {
                     if (current.getType() == Material.COMPASS || current.getType() == Material.RECOVERY_COMPASS || current.getType() == Material.CHORUS_FRUIT) {
+                        // Prüfen, ob Spieler in der richtigen Dimension steht!
+                        String requiredDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
+                        String currentDim = getDimensionName(p.getWorld().getEnvironment());
+
+                        if (!currentDim.equalsIgnoreCase(requiredDim)) {
+                            p.closeInventory();
+                            p.sendMessage(ChatColor.RED + "Du musst dich im " + requiredDim + " befinden, um dieses Home zu setzen!");
+                            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                            return;
+                        }
+
                         p.closeInventory();
                         openBannerSelectMenu(p, i);
                         p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
                     } else if (current.getType().name().contains("BANNER")) {
                         p.closeInventory();
-                        teleportWithCooldown(p, "homes." + p.getUniqueId() + "." + i);
+                        teleportWithValidation(p, i);
                     }
                     return;
                 }
@@ -785,16 +856,14 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             for (int i = 0; i < slots.length; i++) {
                 int baseSlot = slots[i];
                 if (slot == baseSlot || slot == baseSlot + 9) {
-                    String uuidStr = p.getUniqueId().toString();
-                    String path = "homes." + uuidStr + "." + i;
-                    String currentDim = dataConfig.getString(path + ".dimension", "OVERWORLD");
+                    String currentDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
 
                     String nextDim = "OVERWORLD";
                     if (currentDim.equals("OVERWORLD")) nextDim = "NETHER";
                     else if (currentDim.equals("NETHER")) nextDim = "END";
                     else if (currentDim.equals("END")) nextDim = "OVERWORLD";
 
-                    dataConfig.set(path + ".dimension", nextDim);
+                    dataConfig.set("admin-slots." + i + ".dimension", nextDim);
                     saveDataConfig();
                     p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
                     openAdminSettingsMenu(p);
@@ -917,12 +986,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     }
                 }
 
-                String dim = dataConfig.getString(path + ".dimension", "OVERWORLD");
-
                 dataConfig.set(path + ".name", homeName);
                 dataConfig.set(path + ".bannerItem", pending.bannerItem);
                 dataConfig.set(path + ".isMain", isFirst);
-                dataConfig.set(path + ".dimension", dim);
                 dataConfig.set(path + ".world", loc.getWorld().getName());
                 dataConfig.set(path + ".x", loc.getX());
                 dataConfig.set(path + ".y", loc.getY());
@@ -942,6 +1008,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     public void onQuit(PlayerQuitEvent event) {
         pendingHomes.remove(event.getPlayer().getUniqueId());
         pendingDeletes.remove(event.getPlayer().getUniqueId());
+        pendingLastTeleports.remove(event.getPlayer().getUniqueId());
         lastTeleportTimes.remove(event.getPlayer().getUniqueId());
     }
 
