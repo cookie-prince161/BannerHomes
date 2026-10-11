@@ -1,8 +1,8 @@
 name: BannerHomes
-version: 1.8.3
+version: 1.8.5
 main: com.elias.bannerhomes.BannerHomes
 api-version: '1.20'
-description: Visuelles Home-System mit Copper-Lamp Main-Home, Banner-Bereinigung, Spawn & SD.
+description: Visuelles Home-System mit Copper-Torch Main-Home, Banner-Bereinigung, Spawn & SD.
 
 commands:
   homes:
