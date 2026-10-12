@@ -1,6 +1,8 @@
 package com.elias.bannerhomes;
 
 import net.md_5.bungee.api.ChatColor;
+import net.md_5.bungee.api.chat.ClickEvent;
+import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -20,6 +22,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -69,7 +72,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("deltp");
         registerCmd("tpdelete");
 
-        getLogger().info("BannerHomes v2.5.0 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.6.0 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -860,7 +863,29 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
 
         pendingDeletes.put(p.getUniqueId(), targetIndex);
-        p.sendMessage(ChatColor.YELLOW + "Möchtest du das Home wirklich löschen? Nutze /homedelete confirm " + (targetIndex + 1));
+        
+        // Anklickbare Chat-Schaltflächen (wie früher)
+        p.sendMessage(ChatColor.YELLOW + "========================================");
+        p.sendMessage(ChatColor.RED + "Möchtest du dieses Home wirklich löschen?");
+
+        TextComponent promptMsg = new TextComponent("Bestätigung: ");
+        promptMsg.setColor(ChatColor.YELLOW);
+
+        TextComponent yesBtn = new TextComponent("§a§l[JA]");
+        yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + (targetIndex + 1)));
+
+        TextComponent space = new TextComponent("   ");
+
+        TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
+        noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
+
+        promptMsg.addExtra(yesBtn);
+        promptMsg.addExtra(space);
+        promptMsg.addExtra(noBtn);
+
+        p.spigot().sendMessage(promptMsg);
+        p.sendMessage(ChatColor.YELLOW + "========================================");
+        p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
     }
 
     private void deleteHomeByIndex(Player p, int slotDisplayNumber) {
@@ -908,15 +933,35 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         if (!targetDim.equals(currentHomeDim)) {
             pendingLastTeleports.put(p.getUniqueId(), index);
-            p.sendMessage(ChatColor.GRAY + "--------------------------------------------------");
-            p.sendMessage(ChatColor.RED + "⚠ ACHTUNG: Dieser Home-Slot wurde vom Admin auf " + targetDim + " umgestellt!");
-            p.sendMessage(ChatColor.YELLOW + "Dein altes Home liegt noch in " + currentHomeDim + ".");
-            p.sendMessage(ChatColor.GOLD + "Du darfst dich genau NOCH EINMAL dorthin teleportieren, um deine Sachen einzupacken.");
-            p.sendMessage(ChatColor.RED + "Danach wird das Home gelöscht!");
-            p.sendMessage("");
-            p.sendMessage(ChatColor.GREEN + "Klicke / Bestätige mit: " + ChatColor.AQUA + "/homedelete confirm " + (index + 1));
-            p.sendMessage(ChatColor.YELLOW + "Oder breche ab mit: " + ChatColor.RED + "/homedelete cancel");
-            p.sendMessage(ChatColor.GRAY + "--------------------------------------------------");
+
+            String dimText;
+            if (targetDim.equalsIgnoreCase("NETHER")) dimText = "zu einem NETHER-Home";
+            else if (targetDim.equalsIgnoreCase("END")) dimText = "zu einem END-Home";
+            else dimText = "zu einem OVERWORLD-Home";
+
+            // Schöne anklickbare Chat-Warnung mit [JA] und [ABBRECHEN] Buttons
+            p.sendMessage(ChatColor.YELLOW + "========================================");
+            p.sendMessage(ChatColor.RED + "Achtung: Dieser Home-Slot wurde vom Admin " + dimText + " umgeändert.");
+            p.sendMessage(ChatColor.GRAY + "Möchtest du dich ein letztes Mal dorthin teleportieren, um deinen Punkt zu verlegen?");
+
+            TextComponent promptMsg = new TextComponent("Einmaliger Teleport: ");
+            promptMsg.setColor(ChatColor.YELLOW);
+
+            TextComponent yesBtn = new TextComponent("§a§l[JA]");
+            yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + (index + 1)));
+
+            TextComponent space = new TextComponent("   ");
+
+            TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
+            noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
+
+            promptMsg.addExtra(yesBtn);
+            promptMsg.addExtra(space);
+            promptMsg.addExtra(noBtn);
+
+            p.spigot().sendMessage(promptMsg);
+            p.sendMessage(ChatColor.YELLOW + "========================================");
+            p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
             return;
         }
 
@@ -1014,6 +1059,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     }
 
     @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        pendingDeletes.remove(event.getPlayer().getUniqueId());
+        pendingLastTeleports.remove(event.getPlayer().getUniqueId());
+        renamingHomeSlots.remove(event.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
     public void onAsyncPlayerChat(AsyncPlayerChatEvent event) {
         Player p = event.getPlayer();
         if (renamingHomeSlots.containsKey(p.getUniqueId())) {
@@ -1027,10 +1079,24 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
 
             String uuidStr = p.getUniqueId().toString();
-            dataConfig.set("homes." + uuidStr + "." + slotIndex + ".name", newName);
+            String path = "homes." + uuidStr + "." + slotIndex;
+            boolean isNewHome = !dataConfig.contains(path + ".name");
+
+            dataConfig.set(path + ".name", newName);
+            if (isNewHome) {
+                dataConfig.set(path + ".location", p.getLocation());
+                boolean isFirst = true;
+                for (int i = 0; i < 5; i++) {
+                    if (i != slotIndex && dataConfig.contains("homes." + uuidStr + "." + i + ".name")) {
+                        isFirst = false;
+                        break;
+                    }
+                }
+                dataConfig.set(path + ".isMain", isFirst);
+            }
             saveDataConfig();
 
-            p.sendMessage(ChatColor.GREEN + "Dein Home wurde erfolgreich auf '" + newName + "' gesetzt!");
+            p.sendMessage(ChatColor.GREEN + (isNewHome ? "Home '" + newName + "' erfolgreich erstellt!" : "Home erfolgreich in '" + newName + "' umbenannt!"));
             p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.2f);
 
             Bukkit.getScheduler().runTask(this, () -> openHomeMenu(p));
@@ -1214,21 +1280,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
                 dataConfig.set(path + ".banner", clicked.getType().name());
                 dataConfig.set(path + ".bannerItem", clicked);
+                saveDataConfig();
 
                 if (isNewHome) {
-                    dataConfig.set(path + ".location", p.getLocation());
-                    if (!dataConfig.contains(path + ".isMain")) {
-                        dataConfig.set(path + ".isMain", false);
-                    }
-                    saveDataConfig();
-
                     renamingHomeSlots.put(p.getUniqueId(), slotIndex);
                     p.closeInventory();
-                    p.sendMessage(ChatColor.GREEN + "Home an deiner Position markiert!");
                     p.sendMessage(ChatColor.YELLOW + "Schreibe jetzt den Namen für dein neues Home in den Chat:");
-                    p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
                 } else {
-                    saveDataConfig();
                     p.closeInventory();
                     p.sendMessage(ChatColor.GREEN + "Banner-Design für " + dataConfig.getString(path + ".name") + " erfolgreich geändert!");
                     p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
