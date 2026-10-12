@@ -1391,13 +1391,13 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
 
             // Max-Homes verringern/erhöhen
-            if (event.getRawSlot() == 18) { // Minus 1
+            if (event.getRawSlot() == 18) {
                 if (maxHomes > 1) {
                     getConfig().set("max-homes", maxHomes - 1);
                     saveConfig();
                     openAdminSettingsMenu(p);
                 }
-            } else if (event.getRawSlot() == 20) { // Plus 1
+            } else if (event.getRawSlot() == 20) {
                 if (maxHomes < 5) {
                     getConfig().set("max-homes", maxHomes + 1);
                     saveConfig();
