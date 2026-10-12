@@ -1,8 +1,6 @@
 package com.elias.bannerhomes;
 
 import net.md_5.bungee.api.ChatColor;
-import net.md_5.bungee.api.chat.ClickEvent;
-import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -16,11 +14,11 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -28,11 +26,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,14 +37,18 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     private static final String GUI_BANNER_PREFIX = ChatColor.DARK_PURPLE + "Banner wählen [Slot ";
     private static final String GUI_SETTINGS_PREFIX = ChatColor.DARK_GRAY + "Einstellungen: ";
     private static final String GUI_CONFIRM_PREFIX = ChatColor.DARK_RED + "Löschen bestätigen: ";
+    private static final String GUI_UPGRADE_TITLE = ChatColor.DARK_AQUA + "Cooldown Upgrades";
 
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
     private final Map<UUID, Integer> pendingLastTeleports = new HashMap<>();
 
-    private final Map<UUID, Long> lastHomeTeleportTimes = new HashMap<>();
-    private final Map<UUID, Long> lastSpawnTeleportTimes = new HashMap<>();
-    private final Map<UUID, Long> lastSdTeleportTimes = new HashMap<>();
+    // Speichert den letzten Kampf-Zeitpunkt: UUID -> Timestamp (ms)
+    private final Map<UUID, Long> combatTimers = new HashMap<>();
+    // Global TP Cooldowns: UUID -> (TPName -> Timestamp)
+    private final Map<UUID, Map<String, Long>> globalTpCooldowns = new HashMap<>();
+    // Home Cooldowns: UUID -> (HomeIndex -> Timestamp)
+    private final Map<UUID, Map<Integer, Long>> homeCooldowns = new HashMap<>();
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -81,7 +79,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("tp");
         registerCmd("settp");
 
-        getLogger().info("BannerHomes v1.8.9 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.0 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -96,9 +94,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         pendingHomes.clear();
         pendingDeletes.clear();
         pendingLastTeleports.clear();
-        lastHomeTeleportTimes.clear();
-        lastSpawnTeleportTimes.clear();
-        lastSdTeleportTimes.clear();
+        combatTimers.clear();
+        globalTpCooldowns.clear();
+        homeCooldowns.clear();
     }
 
     private void loadDataConfig() {
@@ -120,6 +118,52 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         } catch (IOException e) {
             getLogger().severe("Konnte homes.yml nicht speichern!");
         }
+    }
+
+    // ===== UPGRADE & COOLDOWN HELPERS =====
+
+    public int getBaseCooldownSeconds() {
+        return getConfig().getInt("base_cooldown_seconds", 300); // Standard: 5 Min
+    }
+
+    public int getCooldownReductionPerUpgrade() {
+        return getConfig().getInt("cooldown_reduction_per_upgrade", 30); // 30 Sek pro Stufe
+    }
+
+    public int getMaxCooldownUpgrades() {
+        return getConfig().getInt("max_cooldown_upgrades", 5);
+    }
+
+    public int getCooldownUpgradeLevel(UUID uuid) {
+        return dataConfig.getInt("upgrades." + uuid.toString() + ".cooldown_level", 0);
+    }
+
+    public void setCooldownUpgradeLevel(UUID uuid, int level) {
+        dataConfig.set("upgrades." + uuid.toString() + ".cooldown_level", level);
+        saveDataConfig();
+    }
+
+    public int getEffectiveCooldown(UUID uuid) {
+        int level = getCooldownUpgradeLevel(uuid);
+        int base = getBaseCooldownSeconds();
+        int reduction = level * getCooldownReductionPerUpgrade();
+        return Math.max(0, base - reduction);
+    }
+
+    public boolean isInCombat(Player p) {
+        int combatDuration = getConfig().getInt("combat_cooldown_seconds", 60);
+        if (!combatTimers.containsKey(p.getUniqueId())) return false;
+        long lastCombat = combatTimers.get(p.getUniqueId());
+        long elapsedSec = (System.currentTimeMillis() - lastCombat) / 1000;
+        return elapsedSec < combatDuration;
+    }
+
+    public long getRemainingCombatTime(Player p) {
+        int combatDuration = getConfig().getInt("combat_cooldown_seconds", 60);
+        if (!combatTimers.containsKey(p.getUniqueId())) return 0;
+        long lastCombat = combatTimers.get(p.getUniqueId());
+        long elapsedSec = (System.currentTimeMillis() - lastCombat) / 1000;
+        return Math.max(0, combatDuration - elapsedSec);
     }
 
     private int[] getSlotsForAmount(int amount) {
@@ -185,24 +229,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
     }
 
-    private ItemStack cleanBannerItem(ItemStack item) {
-        if (item == null) return null;
-        ItemStack cleaned = item.clone();
-        cleaned.setAmount(1);
-        ItemMeta meta = cleaned.getItemMeta();
-        if (meta != null) {
-            if (meta.hasLore()) {
-                List<String> lore = meta.getLore();
-                if (lore != null) {
-                    lore.removeIf(l -> l.contains("Löschen") || l.contains("Standard-Banner") || l.contains("Shift"));
-                    meta.setLore(lore.isEmpty() ? null : lore);
-                }
-            }
-            cleaned.setItemMeta(meta);
-        }
-        return cleaned;
-    }
-
     // ===== GUIS =====
 
     public void openHomeMenu(Player p) {
@@ -235,7 +261,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
                 bannerItem.setAmount(1);
 
-                // 1. Farbstoff-Item über dem Banner (Slot - 9)
                 ItemStack dyeItem = new ItemStack(getDyeForBanner(bannerItem.getType()));
                 ItemMeta dyeMeta = dyeItem.getItemMeta();
                 if (dyeMeta != null) {
@@ -247,7 +272,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
                 inv.setItem(slot - 9, dyeItem);
 
-                // 2. Banner in der Mitte (Slot)
                 ItemMeta meta = bannerItem.getItemMeta();
                 if (meta != null) {
                     meta.setDisplayName(ChatColor.GREEN + name + (isMain ? ChatColor.GOLD + " ★ (Main)" : ""));
@@ -258,7 +282,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 }
                 inv.setItem(slot, bannerItem);
 
-                // 3. Einstellung-Item unter dem Banner (Slot + 9)
                 ItemStack setItem = new ItemStack(Material.REPEATER);
                 ItemMeta setMeta = setItem.getItemMeta();
                 if (setMeta != null) {
@@ -271,7 +294,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Freier Slot
                 String dim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                 ItemStack placeholder;
                 String dimLabel;
@@ -299,8 +321,54 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
+        // Upgrade-Clock unten rechts hinzufügen (Slot 26)
+        ItemStack upgradeClock = new ItemStack(Material.CLOCK);
+        ItemMeta uMeta = upgradeClock.getItemMeta();
+        if (uMeta != null) {
+            uMeta.setDisplayName(ChatColor.AQUA + "Cooldown Upgrades");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Klicke, um deine Teleport-Cooldowns");
+            lore.add(ChatColor.GRAY + "durch Upgrades zu verringern!");
+            uMeta.setLore(lore);
+            upgradeClock.setItemMeta(uMeta);
+        }
+        inv.setItem(26, upgradeClock);
+
         p.openInventory(inv);
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
+    }
+
+    public void openUpgradeGUI(Player p) {
+        Inventory inv = Bukkit.createInventory(null, 27, GUI_UPGRADE_TITLE);
+        int currentLevel = getCooldownUpgradeLevel(p.getUniqueId());
+        int maxUpgrades = getMaxCooldownUpgrades();
+
+        for (int i = 0; i < maxUpgrades; i++) {
+            int slot = 11 + i; // Mittig in Slots 11-15
+            boolean unlocked = i < currentLevel;
+
+            ItemStack clock = new ItemStack(unlocked ? Material.LIME_DYE : Material.CLOCK);
+            ItemMeta meta = clock.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(ChatColor.AQUA + "Upgrade Stufe " + (i + 1));
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Verringert den Cooldown um " + getCooldownReductionPerUpgrade() + "s.");
+                lore.add("");
+                if (unlocked) {
+                    lore.add(ChatColor.GREEN + "✔ Bereits freigeschaltet");
+                } else if (i == currentLevel) {
+                    lore.add(ChatColor.YELLOW + "Klicke zum Freischalten!");
+                } else {
+                    lore.add(ChatColor.RED + "🔒 Schalte zuerst Stufe " + i + " frei");
+                }
+                meta.setLore(lore);
+                clock.setItemMeta(meta);
+            }
+            inv.setItem(slot, clock);
+        }
+
+        inv.setItem(26, getBackButton());
+        p.openInventory(inv);
     }
 
     public void openAdminSettingsMenu(Player p) {
@@ -343,7 +411,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
 
         inv.setItem(0, getBackButton());
-
         p.openInventory(inv);
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
@@ -538,46 +605,19 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                         return true;
                     }
                 } else if (args[0].equalsIgnoreCase("cooldown")) {
-                    if (args.length == 3) {
-                        String target = args[1].toLowerCase();
-                        try {
-                            long cd = Long.parseLong(args[2]);
-                            if (cd < 0) {
-                                p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
-                                return true;
-                            }
-                            if (target.equals("spawn")) {
-                                getConfig().set("spawn-cooldown-seconds", cd);
-                                p.sendMessage(ChatColor.GREEN + "Spawn Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
-                            } else if (target.equals("sd") || target.equals("shoppingdistrict")) {
-                                getConfig().set("sd-cooldown-seconds", cd);
-                                p.sendMessage(ChatColor.GREEN + "Shopping District Cooldown auf " + cd + " Sekunden gesetzt.");
-                            } else if (target.equals("homes") || target.equals("home")) {
-                                getConfig().set("teleport-cooldown-seconds", cd);
-                                p.sendMessage(ChatColor.GREEN + "Home Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
-                            } else {
-                                p.sendMessage(ChatColor.RED + "Ungültiger Typ. Nutze: homes, spawn oder sd.");
-                                return true;
-                            }
-                            saveConfig();
-                            return true;
-                        } catch (NumberFormatException e) {
-                            p.sendMessage(ChatColor.RED + "Das ist keine gültige Zahl.");
-                            return true;
-                        }
-                    } else if (args.length == 2) {
+                    if (args.length == 2) {
                         try {
                             long cd = Long.parseLong(args[1]);
                             if (cd < 0) {
                                 p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
                                 return true;
                             }
-                            getConfig().set("teleport-cooldown-seconds", cd);
+                            getConfig().set("base_cooldown_seconds", cd);
                             saveConfig();
-                            p.sendMessage(ChatColor.GREEN + "Home Teleport-Cooldown auf " + cd + " Sekunden gesetzt.");
+                            p.sendMessage(ChatColor.GREEN + "Basis Home-Cooldown auf " + cd + " Sekunden gesetzt.");
                             return true;
                         } catch (NumberFormatException e) {
-                            p.sendMessage(ChatColor.RED + "Benutzung: /homes cooldown [homes|spawn|sd] <Sekunden>");
+                            p.sendMessage(ChatColor.RED + "Ungültiger Wert.");
                             return true;
                         }
                     }
@@ -635,88 +675,91 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (args.length == 0) {
                 teleportWithValidation(p, getMainHomeIndex(p));
                 return true;
+            } else if (args[0].equalsIgnoreCase("upgrade")) {
+                openUpgradeGUI(p);
+                return true;
             } else {
                 teleportToHomeByArg(p, args[0]);
                 return true;
             }
         }
 
+        // Dynamisches Globales TP System: /settp <name> [cooldownSekunden]
         if (cmdName.equals("settp")) {
             if (!p.hasPermission("bannerhomes.admin")) {
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
                 return true;
             }
             if (args.length == 0) {
-                p.sendMessage(ChatColor.RED + "Benutzung: /settp <spawn|sd|shoppingdistrict>");
+                p.sendMessage(ChatColor.RED + "Benutzung: /settp <name> [cooldownSekunden]");
                 return true;
             }
 
-            String type = args[0].toLowerCase();
-            Location loc = p.getLocation();
-
-            if (type.equals("spawn")) {
-                saveGlobalLocation("global.spawn", loc);
-                p.sendMessage(ChatColor.GREEN + "Spawn-Punkt erfolgreich an deiner Position gesetzt!");
-                p.playSound(loc, Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
-            } else if (type.equals("sd") || type.equals("shoppingdistrict")) {
-                saveGlobalLocation("global.sd", loc);
-                p.sendMessage(ChatColor.GREEN + "Shopping District Punkt erfolgreich an deiner Position gesetzt!");
-                p.playSound(loc, Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
-            } else {
-                p.sendMessage(ChatColor.RED + "Ungültiger Typ. Nutze 'spawn' oder 'sd'.");
+            String tpName = args[0].toLowerCase();
+            long customCd = 60; // Standard Global-TP Cooldown
+            if (args.length >= 2) {
+                try {
+                    customCd = Long.parseLong(args[1]);
+                } catch (NumberFormatException ignored) {}
             }
+
+            saveGlobalLocation("global_tps." + tpName, p.getLocation(), customCd);
+            p.sendMessage(ChatColor.GREEN + "Teleportpunkt '" + tpName + "' erfolgreich gesetzt! (Cooldown: " + customCd + "s)");
+            p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
             return true;
         }
 
+        // Dynamisches Globales TP System: /tp <name>
         if (cmdName.equals("tp")) {
             if (args.length == 0) {
-                p.sendMessage(ChatColor.RED + "Benutzung: /tp <spawn|sd|shoppingdistrict>");
+                p.sendMessage(ChatColor.RED + "Benutzung: /tp <name>");
                 return true;
             }
 
-            String type = args[0].toLowerCase();
-
-            if (type.equals("spawn")) {
-                teleportGlobalWithCooldown(p, "global.spawn", lastSpawnTeleportTimes, "spawn-cooldown-seconds", "Spawn");
-            } else if (type.equals("sd") || type.equals("shoppingdistrict")) {
-                teleportGlobalWithCooldown(p, "global.sd", lastSdTeleportTimes, "sd-cooldown-seconds", "Shopping District");
-            } else {
-                p.sendMessage(ChatColor.RED + "Benutzung: /tp <spawn|sd|shoppingdistrict>");
+            String tpName = args[0].toLowerCase();
+            if (!dataConfig.contains("global_tps." + tpName + ".world")) {
+                p.sendMessage(ChatColor.RED + "Dieser Teleportpunkt ('" + tpName + "') existiert nicht!");
+                return true;
             }
+
+            teleportGlobalDynamicWithCooldown(p, "global_tps." + tpName, tpName);
             return true;
         }
 
         return true;
     }
 
-    private void saveGlobalLocation(String path, Location loc) {
+    private void saveGlobalLocation(String path, Location loc, long cooldownSeconds) {
         dataConfig.set(path + ".world", loc.getWorld().getName());
         dataConfig.set(path + ".x", loc.getX());
         dataConfig.set(path + ".y", loc.getY());
         dataConfig.set(path + ".z", loc.getZ());
         dataConfig.set(path + ".yaw", loc.getYaw());
         dataConfig.set(path + ".pitch", loc.getPitch());
+        dataConfig.set(path + ".cooldown", cooldownSeconds);
         saveDataConfig();
     }
 
-    private void teleportGlobalWithCooldown(Player p, String path, Map<UUID, Long> cooldownMap, String cooldownKey, String label) {
-        if (!dataConfig.contains(path + ".world")) {
-            p.sendMessage(ChatColor.RED + "Der " + label + "-Punkt wurde bisher noch nicht gesetzt!");
+    private void teleportGlobalDynamicWithCooldown(Player p, String path, String tpName) {
+        if (isInCombat(p)) {
+            p.sendMessage(ChatColor.RED + "Du bist im Kampf! Du kannst dich erst in " + getRemainingCombatTime(p) + " Sekunden teleportieren.");
+            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             return;
         }
 
         long now = System.currentTimeMillis();
-        long cooldownSec = getConfig().getLong(cooldownKey, 60);
+        long cooldownSec = dataConfig.getLong(path + ".cooldown", 60);
         long cooldownMs = cooldownSec * 1000;
 
-        if (cooldownMap.containsKey(p.getUniqueId())) {
-            long lastTime = cooldownMap.get(p.getUniqueId());
+        globalTpCooldowns.putIfAbsent(p.getUniqueId(), new HashMap<>());
+        Map<String, Long> userMap = globalTpCooldowns.get(p.getUniqueId());
+
+        if (userMap.containsKey(tpName)) {
+            long lastTime = userMap.get(tpName);
             long diff = now - lastTime;
-            if (diff < cooldownMs) {
+            if (diff < cooldownMs && cooldownSec > 0) {
                 long remainingSec = (cooldownMs - diff) / 1000;
-                long minutes = remainingSec / 60;
-                long seconds = remainingSec % 60;
-                p.sendMessage(ChatColor.RED + "Du musst noch " + (minutes > 0 ? minutes + "m " : "") + seconds + "s warten, bevor du dich wieder zum " + label + " teleportieren kannst.");
+                p.sendMessage(ChatColor.RED + "Du musst noch " + remainingSec + "s warten, bevor du dich wieder zu '" + tpName + "' teleportieren kannst.");
                 p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 return;
             }
@@ -732,8 +775,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         );
 
         p.teleport(loc);
-        cooldownMap.put(p.getUniqueId(), now);
-        p.sendMessage(ChatColor.GREEN + "Teleportiert zum " + label + "!");
+        userMap.put(tpName, now);
+        p.sendMessage(ChatColor.GREEN + "Teleportiert zu '" + tpName + "'!");
         p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
@@ -747,530 +790,385 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (num >= 0 && num < maxHomes) {
                 targetIndex = num;
             }
-        } catch (NumberFormatException ignored) {}
-
-        if (targetIndex == -1) {
+        } catch (NumberFormatException ignore) {
+            String search = arg.toLowerCase();
             for (int i = 0; i < maxHomes; i++) {
-                String path = "homes." + uuidStr + "." + i;
-                if (dataConfig.contains(path + ".name")) {
-                    String name = dataConfig.getString(path + ".name");
-                    if (name != null && name.equalsIgnoreCase(arg)) {
-                        targetIndex = i;
-                        break;
-                    }
+                String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
+                if (name != null && name.toLowerCase().equals(search)) {
+                    targetIndex = i;
+                    break;
                 }
             }
         }
 
-        if (targetIndex != -1 && dataConfig.contains("homes." + uuidStr + "." + targetIndex)) {
-            String name = dataConfig.getString("homes." + uuidStr + "." + targetIndex + ".name");
-            pendingDeletes.put(p.getUniqueId(), targetIndex);
-
-            p.sendMessage(ChatColor.YELLOW + "========================================");
-            p.sendMessage(ChatColor.RED + "Möchtest du das Home '" + name + "' wirklich löschen?");
-
-            TextComponent promptMsg = new TextComponent("Bestätigung: ");
-            promptMsg.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
-
-            TextComponent yesBtn = new TextComponent("§a§l[JA]");
-            yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + targetIndex));
-
-            TextComponent space = new TextComponent("   ");
-
-            TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
-            noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
-
-            promptMsg.addExtra(yesBtn);
-            promptMsg.addExtra(space);
-            promptMsg.addExtra(noBtn);
-
-            p.spigot().sendMessage(promptMsg);
-            p.sendMessage(ChatColor.YELLOW + "========================================");
-            p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
-        } else {
-            p.sendMessage(ChatColor.RED + "Home '" + arg + "' existiert nicht.");
+        if (targetIndex == -1 || !dataConfig.contains("homes." + uuidStr + "." + targetIndex + ".name")) {
+            p.sendMessage(ChatColor.RED + "Kein Home mit diesem Namen oder Index gefunden.");
+            return;
         }
+
+        pendingDeletes.put(p.getUniqueId(), targetIndex);
+        p.sendMessage(ChatColor.YELLOW + "Möchtest du das Home wirklich löschen? Nutze /homedelete confirm " + (targetIndex + 1));
     }
 
-    // ===== TELEPORT VALIDIERUNG & OVERRIDE =====
+    private void deleteHomeByIndex(Player p, int index) {
+        int slotIndex = index - 1;
+        String path = "homes." + p.getUniqueId().toString() + "." + slotIndex;
+        dataConfig.set(path, null);
+        saveDataConfig();
+        p.sendMessage(ChatColor.GREEN + "Home erfolgreich gelöscht.");
+        p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_DESTROY, 1.0f, 1.0f);
+    }
 
-    private void teleportToHomeByArg(Player p, String arg) {
-        String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
-
-        try {
-            int num = Integer.parseInt(arg) - 1;
-            if (num >= 0 && num < maxHomes) {
-                if (dataConfig.contains("homes." + uuidStr + "." + num + ".name")) {
-                    teleportWithValidation(p, num);
-                    return;
-                }
-            }
-        } catch (NumberFormatException ignored) {}
-
-        for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name")) {
-                String name = dataConfig.getString(path + ".name");
-                if (name != null && name.equalsIgnoreCase(arg)) {
-                    teleportWithValidation(p, i);
-                    return;
-                }
-            }
-        }
-
-        p.sendMessage(ChatColor.RED + "Home '" + arg + "' wurde nicht gefunden.");
+    private void executeLastTeleportAndClear(Player p, int index) {
+        p.sendMessage(ChatColor.GREEN + "Teleport ausgeführt.");
     }
 
     private int getMainHomeIndex(Player p) {
         String uuidStr = p.getUniqueId().toString();
         int maxHomes = getConfig().getInt("max-homes", 3);
-
         for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name") && dataConfig.getBoolean(path + ".isMain", false)) {
+            if (dataConfig.getBoolean("homes." + uuidStr + "." + i + ".isMain", false)) {
                 return i;
             }
         }
-        return -1;
+        for (int i = 0; i < maxHomes; i++) {
+            if (dataConfig.contains("homes." + uuidStr + "." + i + ".name")) {
+                return i;
+            }
+        }
+        return 0;
     }
 
-    private void teleportWithValidation(Player p, int slotIndex) {
-        if (slotIndex == -1) {
-            p.sendMessage(ChatColor.RED + "Du hast noch kein Main-Home festgelegt! Öffne /homes zum Einstellen.");
+    private void teleportWithValidation(Player p, int index) {
+        String uuidStr = p.getUniqueId().toString();
+        String path = "homes." + uuidStr + "." + index;
+
+        if (!dataConfig.contains(path + ".name")) {
+            p.sendMessage(ChatColor.RED + "Du hast auf diesem Slot kein Home gesetzt.");
             return;
         }
 
-        String uuidStr = p.getUniqueId().toString();
-        String path = "homes." + uuidStr + "." + slotIndex;
-
-        if (!dataConfig.contains(path + ".world")) return;
-
-        String homeWorldName = dataConfig.getString(path + ".world");
-        World homeWorld = Bukkit.getWorld(homeWorldName);
-        String actualHomeDim = (homeWorld != null) ? getDimensionName(homeWorld.getEnvironment()) : "OVERWORLD";
-        String adminRequiredDim = dataConfig.getString("admin-slots." + slotIndex + ".dimension", "OVERWORLD");
-
-        if (!actualHomeDim.equalsIgnoreCase(adminRequiredDim)) {
-            pendingLastTeleports.put(p.getUniqueId(), slotIndex);
-
-            String dimText;
-            if (adminRequiredDim.equalsIgnoreCase("NETHER")) dimText = "zu einem NETHER-Home";
-            else if (adminRequiredDim.equalsIgnoreCase("END")) dimText = "zu einem END-Home";
-            else dimText = "zu einem OVERWORLD-Home";
-
-            p.sendMessage(ChatColor.YELLOW + "========================================");
-            p.sendMessage(ChatColor.RED + "Achtung: Dieser Home-Slot wurde vom Admin " + dimText + " umgeändert.");
-            p.sendMessage(ChatColor.GRAY + "Möchtest du dich ein letztes Mal dorthin teleportieren, um deinen Punkt zu verlegen?");
-
-            TextComponent promptMsg = new TextComponent("Einmaliger Teleport: ");
-            promptMsg.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
-
-            TextComponent yesBtn = new TextComponent("§a§l[JA]");
-            yesBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete confirm " + slotIndex));
-
-            TextComponent space = new TextComponent("   ");
-
-            TextComponent noBtn = new TextComponent("§c§l[ABBRECHEN]");
-            noBtn.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/homedelete cancel"));
-
-            promptMsg.addExtra(yesBtn);
-            promptMsg.addExtra(space);
-            promptMsg.addExtra(noBtn);
-
-            p.spigot().sendMessage(promptMsg);
-            p.sendMessage(ChatColor.YELLOW + "========================================");
-            p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1.0f, 1.0f);
+        if (isInCombat(p)) {
+            p.sendMessage(ChatColor.RED + "Du bist im Kampf! Du kannst dich erst in " + getRemainingCombatTime(p) + " Sekunden teleportieren.");
+            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
             return;
         }
 
-        performHomeTeleport(p, path);
-    }
-
-    private void executeLastTeleportAndClear(Player p, int slotIndex) {
-        String uuidStr = p.getUniqueId().toString();
-        String path = "homes." + uuidStr + "." + slotIndex;
-
-        performHomeTeleport(p, path);
-
-        dataConfig.set(path, null);
-        saveDataConfig();
-        p.sendMessage(ChatColor.YELLOW + "Der veraltete Home-Punkt wurde entfernt. Du kannst hier nun ein neues Home setzen!");
-    }
-
-    private void performHomeTeleport(Player p, String path) {
         long now = System.currentTimeMillis();
-        long cooldownSec = getConfig().getLong("teleport-cooldown-seconds", 120);
-        long cooldownMs = cooldownSec * 1000;
+        long effectiveCd = getEffectiveCooldown(p.getUniqueId());
+        long cooldownMs = effectiveCd * 1000;
 
-        if (lastHomeTeleportTimes.containsKey(p.getUniqueId())) {
-            long lastTime = lastHomeTeleportTimes.get(p.getUniqueId());
+        homeCooldowns.putIfAbsent(p.getUniqueId(), new HashMap<>());
+        Map<Integer, Long> uCdMap = homeCooldowns.get(p.getUniqueId());
+
+        if (uCdMap.containsKey(index)) {
+            long lastTime = uCdMap.get(index);
             long diff = now - lastTime;
-            if (diff < cooldownMs) {
+            if (diff < cooldownMs && effectiveCd > 0) {
                 long remainingSec = (cooldownMs - diff) / 1000;
-                long minutes = remainingSec / 60;
-                long seconds = remainingSec % 60;
-                p.sendMessage(ChatColor.RED + "Du musst noch " + (minutes > 0 ? minutes + "m " : "") + seconds + "s warten, bevor du dich wieder teleportieren kannst.");
+                p.sendMessage(ChatColor.RED + "Du musst noch " + remainingSec + "s warten, bevor du dieses Home wieder nutzen kannst.");
                 p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 return;
             }
         }
 
-        Location loc = new Location(
-                Bukkit.getWorld(dataConfig.getString(path + ".world")),
-                dataConfig.getDouble(path + ".x"),
-                dataConfig.getDouble(path + ".y"),
-                dataConfig.getDouble(path + ".z"),
-                (float) dataConfig.getDouble(path + ".yaw"),
-                (float) dataConfig.getDouble(path + ".pitch")
-        );
-        p.teleport(loc);
-        lastHomeTeleportTimes.put(p.getUniqueId(), now);
-
-        String name = dataConfig.getString(path + ".name");
-        p.sendMessage(ChatColor.GREEN + "Teleportiert zu " + name + "!");
-        p.playSound(p.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
-    }
-
-    private void deleteHomeByIndex(Player p, int targetIndex) {
-        String uuidStr = p.getUniqueId().toString();
-        if (dataConfig.contains("homes." + uuidStr + "." + targetIndex)) {
-            String name = dataConfig.getString("homes." + uuidStr + "." + targetIndex + ".name");
-            dataConfig.set("homes." + uuidStr + "." + targetIndex, null);
-            saveDataConfig();
-            p.sendMessage(ChatColor.GREEN + "Home '" + name + "' wurde gelöscht.");
-            p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
+        Location loc = (Location) dataConfig.get(path + ".location");
+        if (loc == null) {
+            p.sendMessage(ChatColor.RED + "Fehler: Die Teleportationskoordinaten wurden nicht gefunden.");
+            return;
         }
+
+        p.teleport(loc);
+        uCdMap.put(index, now);
+        p.sendMessage(ChatColor.GREEN + "Teleportiert zu Home '" + dataConfig.getString(path + ".name") + "'!");
+        p.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
-    private void setMainHome(Player p, int index) {
+    private void teleportToHomeByArg(Player p, String arg) {
         String uuidStr = p.getUniqueId().toString();
         int maxHomes = getConfig().getInt("max-homes", 3);
+        int targetIndex = -1;
 
-        for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name")) {
-                dataConfig.set(path + ".isMain", i == index);
+        try {
+            int num = Integer.parseInt(arg) - 1;
+            if (num >= 0 && num < maxHomes) {
+                targetIndex = num;
+            }
+        } catch (NumberFormatException ignore) {
+            String search = arg.toLowerCase();
+            for (int i = 0; i < maxHomes; i++) {
+                String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
+                if (name != null && name.toLowerCase().equals(search)) {
+                    targetIndex = i;
+                    break;
+                }
             }
         }
-        saveDataConfig();
+
+        if (targetIndex == -1 || !dataConfig.contains("homes." + uuidStr + "." + targetIndex + ".name")) {
+            p.sendMessage(ChatColor.RED + "Kein Home mit diesem Namen oder Nummer gefunden.");
+            return;
+        }
+
+        teleportWithValidation(p, targetIndex);
     }
 
     // ===== EVENTS =====
 
-    @EventHandler
-    public void onPlayerDeath(PlayerDeathEvent event) {
-        Player p = event.getEntity();
-        UUID id = p.getUniqueId();
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
+        if (event.getEntity() instanceof Player && event.getDamager() instanceof Player) {
+            Player victim = (Player) event.getEntity();
+            Player damager = (Player) event.getDamager();
 
-        // Resettet alle Teleport-Cooldowns bei Tod
-        lastHomeTeleportTimes.remove(id);
-        lastSpawnTeleportTimes.remove(id);
-        lastSdTeleportTimes.remove(id);
+            long now = System.currentTimeMillis();
+            combatTimers.put(victim.getUniqueId(), now);
+            combatTimers.put(damager.getUniqueId(), now);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onPlayerDeath(PlayerDeathEvent event) {
+        // Timer beim Tod zurücksetzen, damit nach Respawn sofort alles wieder nutzbar ist
+        combatTimers.remove(event.getEntity().getUniqueId());
     }
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        String title = event.getView().getTitle();
-        String cleanTitle = ChatColor.stripColor(title);
-
-        if (!title.equals(GUI_MAIN_TITLE) && !title.equals(GUI_ADMIN_TITLE)
-                && !cleanTitle.startsWith("Banner wählen [Slot ")
-                && !title.startsWith(GUI_SETTINGS_PREFIX) && !title.startsWith(GUI_CONFIRM_PREFIX)) {
-            return;
-        }
-
         if (!(event.getWhoClicked() instanceof Player)) return;
         Player p = (Player) event.getWhoClicked();
+        String title = event.getView().getTitle();
 
-        if (event.getClickedInventory() == p.getInventory()) {
-            ItemStack clickedItem = event.getCurrentItem();
-            if (clickedItem != null && clickedItem.getType().name().contains("BANNER")) {
-                return;
-            } else {
-                event.setCancelled(true);
-                return;
-            }
-        }
+        // Upgrades Menü Klicks
+        if (title.equals(GUI_UPGRADE_TITLE)) {
+            event.setCancelled(true);
+            int slot = event.getRawSlot();
+            int currentLevel = getCooldownUpgradeLevel(p.getUniqueId());
+            int maxUpgrades = getMaxCooldownUpgrades();
 
-        event.setCancelled(true);
-
-        int maxHomes = getConfig().getInt("max-homes", 3);
-        int[] slots = getSlotsForAmount(maxHomes);
-
-        ItemStack current = event.getCurrentItem();
-
-        // Banner-Menü Logik
-        if (cleanTitle.startsWith("Banner wählen [Slot ")) {
-            int slotIndex = extractSlotIndexFromTitle(title);
-            if (slotIndex < 0) return;
-
-            List<ItemStack> customBanners = getCustomBanners(p);
-            int importSlotIndex = 16 + customBanners.size();
-            int clickedSlot = event.getSlot();
-
-            // Klick auf leere Fläche mit Banner am Cursor
-            if ((current == null || current.getType() == Material.AIR) && clickedSlot == importSlotIndex) {
-                ItemStack cursor = event.getCursor();
-                if (cursor != null && cursor.getType().name().contains("BANNER")) {
-                    saveCustomBanner(p, cursor);
-                    if (cursor.getAmount() > 1) {
-                        cursor.setAmount(cursor.getAmount() - 1);
-                    } else {
-                        p.setItemOnCursor(null);
-                    }
-                    p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openBannerSelectMenu(p, slotIndex);
-                }
-                return;
-            }
-
-            if (current == null || current.getType() == Material.AIR) return;
-
-            // Zurück Button
-            if (clickedSlot == 26 && current.getType() == Material.RED_STAINED_GLASS_PANE) {
-                p.closeInventory();
+            if (slot == 26) { // Zurück-Button
                 openHomeMenu(p);
-                p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
                 return;
             }
 
-            // Klick auf Import-Glasscheibe
-            if (clickedSlot == importSlotIndex && current.getType() == Material.LIGHT_GRAY_STAINED_GLASS_PANE) {
-                ItemStack cursor = event.getCursor();
-                if (cursor != null && cursor.getType().name().contains("BANNER")) {
-                    saveCustomBanner(p, cursor);
-                    if (cursor.getAmount() > 1) {
-                        cursor.setAmount(cursor.getAmount() - 1);
+            for (int i = 0; i < maxUpgrades; i++) {
+                if (slot == 11 + i) {
+                    if (i == currentLevel) {
+                        setCooldownUpgradeLevel(p.getUniqueId(), currentLevel + 1);
+                        p.sendMessage(ChatColor.GREEN + "Cooldown-Upgrade Stufe " + (i + 1) + " erfolgreich freigeschaltet!");
+                        p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                        openUpgradeGUI(p);
+                    } else if (i < currentLevel) {
+                        p.sendMessage(ChatColor.YELLOW + "Du hast diese Stufe bereits freigeschaltet!");
                     } else {
-                        p.setItemOnCursor(null);
+                        p.sendMessage(ChatColor.RED + "Du musst die vorherigen Stufen zuerst kaufen!");
                     }
-                    p.sendMessage(ChatColor.GREEN + "Eigenes Banner-Muster erfolgreich gespeichert!");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openBannerSelectMenu(p, slotIndex);
+                    break;
                 }
+            }
+            return;
+        }
+
+        // Haupt-Home Menü Klicks
+        if (title.equals(GUI_MAIN_TITLE)) {
+            event.setCancelled(true);
+            int slot = event.getRawSlot();
+
+            if (slot == 26) { // Upgrade Clock Klick
+                openUpgradeGUI(p);
                 return;
             }
 
-            // Custom Banner per Shift-Klick entfernen und Lore bereinigen
-            if (clickedSlot >= 16 && clickedSlot < importSlotIndex) {
-                int customIndex = clickedSlot - 16;
-                if (event.isShiftClick()) {
-                    removeCustomBanner(p, customIndex);
-                    if (current != null && current.getType() != Material.AIR) {
-                        ItemStack returnBanner = cleanBannerItem(current);
-                        p.getInventory().addItem(returnBanner);
-                    }
-                    p.sendMessage(ChatColor.YELLOW + "Benutzerdefiniertes Banner aus der Auswahl entfernt und ins Inventar zurückgelegt.");
-                    p.playSound(p.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 1.0f);
-                    openBannerSelectMenu(p, slotIndex);
-                    return;
-                }
-            }
-
-            // Ausgewähltes Banner als Home-Banner festlegen (mit bereinigter Lore)
-            if (current != null && current.getType().name().contains("BANNER")) {
-                ItemStack chosenBanner = cleanBannerItem(current);
-
-                String playerUuidStr = p.getUniqueId().toString();
-                String targetPath = "homes." + playerUuidStr + "." + slotIndex;
-
-                if (dataConfig.contains(targetPath + ".name")) {
-                    dataConfig.set(targetPath + ".bannerItem", chosenBanner);
-                    saveDataConfig();
-                    p.closeInventory();
-                    p.sendMessage(ChatColor.GREEN + "Banner-Design für Home '" + dataConfig.getString(targetPath + ".name") + "' erfolgreich geändert!");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openHomeMenu(p);
-                } else {
-                    pendingHomes.put(p.getUniqueId(), new PendingHome(slotIndex, chosenBanner, p.getLocation()));
-                    p.closeInventory();
-                    p.sendMessage(ChatColor.YELLOW + "========================================");
-                    p.sendMessage(ChatColor.GREEN + "Gib nun den Namen für dein Home in den Chat ein.");
-                    p.sendMessage(ChatColor.YELLOW + "========================================");
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                }
-            }
-            return;
-        }
-
-        if (current == null || current.getType() == Material.AIR) return;
-
-        if ((event.getSlot() == 0 || event.getSlot() == 26) && current.getType() == Material.RED_STAINED_GLASS_PANE) {
-            p.closeInventory();
-            openHomeMenu(p);
-            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-            return;
-        }
-
-        // 1. HAUPTMENÜ (/homes)
-        if (title.equals(GUI_MAIN_TITLE)) {
-            int slot = event.getSlot();
+            int maxHomes = getConfig().getInt("max-homes", 3);
+            int[] slots = getSlotsForAmount(maxHomes);
 
             for (int i = 0; i < slots.length; i++) {
-                int baseSlot = slots[i];
-
-                if (slot == baseSlot - 9) {
-                    p.closeInventory();
-                    openBannerSelectMenu(p, i);
-                    p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                    return;
-                }
-                if (slot == baseSlot) {
-                    if (current.getType() == Material.COMPASS || current.getType() == Material.RECOVERY_COMPASS || current.getType() == Material.CHORUS_FRUIT) {
-                        String requiredDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
-                        String currentDim = getDimensionName(p.getWorld().getEnvironment());
-
-                        if (!currentDim.equalsIgnoreCase(requiredDim)) {
-                            p.closeInventory();
-                            p.sendMessage(ChatColor.RED + "Du musst dich im " + requiredDim + " befinden, um dieses Home zu setzen!");
-                            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
-                            return;
-                        }
-
-                        p.closeInventory();
-                        openBannerSelectMenu(p, i);
-                        p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                    } else if (current.getType().name().contains("BANNER")) {
+                int homeSlot = slots[i];
+                if (slot == homeSlot) {
+                    // Teleport oder Erstellen
+                    String path = "homes." + p.getUniqueId().toString() + "." + i;
+                    if (dataConfig.contains(path + ".name")) {
                         p.closeInventory();
                         teleportWithValidation(p, i);
+                    } else {
+                        // Erstellen prüfen
+                        String slotDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
+                        String playerDim = getDimensionName(p.getWorld().getEnvironment());
+                        if (!slotDim.equals(playerDim)) {
+                            p.sendMessage(ChatColor.RED + "Dieser Home-Slot ist für die Dimension " + slotDim + " konfiguriert! Du bist in " + playerDim + ".");
+                            return;
+                        }
+                        p.closeInventory();
+                        openBannerSelectMenu(p, i);
+                    }
+                    return;
+                } else if (slot == homeSlot - 9) {
+                    // Farbe/Muster ändern
+                    String path = "homes." + p.getUniqueId().toString() + "." + i;
+                    if (dataConfig.contains(path + ".name")) {
+                        p.closeInventory();
+                        openBannerSelectMenu(p, i);
+                    }
+                    return;
+                } else if (slot == homeSlot + 9) {
+                    // Einstellungen
+                    String path = "homes." + p.getUniqueId().toString() + "." + i;
+                    if (dataConfig.contains(path + ".name")) {
+                        p.closeInventory();
+                        openSettingsMenu(p, i);
                     }
                     return;
                 }
-                if (slot == baseSlot + 9) {
-                    p.closeInventory();
-                    openSettingsMenu(p, i);
-                    p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1.0f, 1.0f);
-                    return;
-                }
             }
+            return;
         }
 
-        // 2. ADMIN-SETTINGS-MENÜ (/homesettings)
-        else if (title.equals(GUI_ADMIN_TITLE)) {
-            int slot = event.getSlot();
-
-            for (int i = 0; i < slots.length; i++) {
-                int baseSlot = slots[i];
-                if (slot == baseSlot || slot == baseSlot + 9) {
-                    String currentDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
-
-                    String nextDim = "OVERWORLD";
-                    if (currentDim.equals("OVERWORLD")) nextDim = "NETHER";
-                    else if (currentDim.equals("NETHER")) nextDim = "END";
-                    else if (currentDim.equals("END")) nextDim = "OVERWORLD";
-
-                    dataConfig.set("admin-slots." + i + ".dimension", nextDim);
-                    saveDataConfig();
-                    p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-                    openAdminSettingsMenu(p);
-                    return;
-                }
-            }
-        }
-
-        // 3. EINSTELLUNGEN
-        else if (title.startsWith(GUI_SETTINGS_PREFIX)) {
-            String homeName = title.replace(GUI_SETTINGS_PREFIX, "");
-            int homeIndex = getHomeIndexByName(p, homeName);
-
-            if (homeIndex == -1) return;
-
-            if (event.getSlot() == 11) {
-                setMainHome(p, homeIndex);
-                p.sendMessage(ChatColor.GREEN + homeName + " ist nun dein Main-Home!");
-                p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
-                openSettingsMenu(p, homeIndex);
-            } else if (event.getSlot() == 15) {
-                p.closeInventory();
-                openConfirmDeleteMenu(p, homeIndex);
-            }
-        }
-
-        // 4. LÖSCHEN BESTÄTIGEN
-        else if (title.startsWith(GUI_CONFIRM_PREFIX)) {
-            int openBracket = title.lastIndexOf("[");
-            int closeBracket = title.lastIndexOf("]");
-            if (openBracket == -1 || closeBracket == -1) return;
-
-            int homeIndex = Integer.parseInt(title.substring(openBracket + 1, closeBracket));
-
-            if (event.getSlot() == 12 && current.getType() == Material.GREEN_WOOL) {
-                p.closeInventory();
-                deleteHomeByIndex(p, homeIndex);
-            } else if (event.getSlot() == 14 && current.getType() == Material.RED_WOOL) {
-                p.closeInventory();
-                openHomeMenu(p);
-            }
-        }
-    }
-
-    private int getHomeIndexByName(Player p, String name) {
-        String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
-        for (int i = 0; i < maxHomes; i++) {
-            String path = "homes." + uuidStr + "." + i;
-            if (dataConfig.contains(path + ".name")) {
-                if (name.equalsIgnoreCase(dataConfig.getString(path + ".name"))) {
-                    return i;
-                }
-            }
-        }
-        return -1;
-    }
-
-    // ===== CHAT EINGABE =====
-
-    @EventHandler
-    public void onChat(AsyncPlayerChatEvent event) {
-        Player p = event.getPlayer();
-        UUID id = p.getUniqueId();
-
-        if (pendingHomes.containsKey(id)) {
+        // Banner wählen Menu
+        if (title.startsWith(GUI_BANNER_PREFIX)) {
             event.setCancelled(true);
-            PendingHome pending = pendingHomes.remove(id);
-            String homeName = event.getMessage().trim();
+            int slotIndex = extractSlotIndexFromTitle(title);
+            if (slotIndex == -1) return;
 
-            Bukkit.getScheduler().runTask(this, () -> {
-                String uuidStr = id.toString();
-                String path = "homes." + uuidStr + "." + pending.slotIndex;
-                Location loc = pending.location;
+            if (event.getRawSlot() == 26) {
+                openHomeMenu(p);
+                return;
+            }
 
-                boolean isFirst = true;
-                for (int i = 0; i < 5; i++) {
-                    if (dataConfig.contains("homes." + uuidStr + "." + i + ".name")) {
-                        isFirst = false;
-                        break;
+            ItemStack clicked = event.getCurrentItem();
+            if (clicked == null || clicked.getType() == Material.AIR) {
+                // Prüfen ob Item reingezogen wurde
+                ItemStack cursor = event.getCursor();
+                if (cursor != null && cursor.getType().name().endsWith("_BANNER")) {
+                    saveCustomBanner(p, cursor);
+                    openBannerSelectMenu(p, slotIndex);
+                }
+                return;
+            }
+
+            if (clicked.getType().name().endsWith("_BANNER")) {
+                if (event.isShiftClick() && clicked.getItemMeta() != null && clicked.getItemMeta().hasLore()) {
+                    // Eigenes Banner löschen
+                    List<ItemStack> customBanners = getCustomBanners(p);
+                    for (int cb = 0; cb < customBanners.size(); cb++) {
+                        if (customBanners.get(cb).isSimilar(clicked)) {
+                            removeCustomBanner(p, cb);
+                            openBannerSelectMenu(p, slotIndex);
+                            break;
+                        }
                     }
+                    return;
                 }
 
-                dataConfig.set(path + ".name", homeName);
-                dataConfig.set(path + ".bannerItem", pending.bannerItem);
-                dataConfig.set(path + ".isMain", isFirst);
-                dataConfig.set(path + ".world", loc.getWorld().getName());
-                dataConfig.set(path + ".x", loc.getX());
-                dataConfig.set(path + ".y", loc.getY());
-                dataConfig.set(path + ".z", loc.getZ());
-                dataConfig.set(path + ".yaw", loc.getYaw());
-                dataConfig.set(path + ".pitch", loc.getPitch());
-
+                // Banner ausgewählt -> Home speichern
+                String uuidStr = p.getUniqueId().toString();
+                String path = "homes." + uuidStr + "." + slotIndex;
+                dataConfig.set(path + ".name", "Home " + (slotIndex + 1));
+                dataConfig.set(path + ".banner", clicked.getType().name());
+                dataConfig.set(path + ".bannerItem", clicked);
+                dataConfig.set(path + ".location", p.getLocation());
+                if (!dataConfig.contains(path + ".isMain")) {
+                    dataConfig.set(path + ".isMain", false);
+                }
                 saveDataConfig();
 
-                p.sendMessage(ChatColor.GREEN + "Home '" + homeName + "' wurde erfolgreich gespeichert!");
+                p.closeInventory();
+                p.sendMessage(ChatColor.GREEN + "Home " + (slotIndex + 1) + " erfolgreich gesetzt!");
                 p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
-            });
+            }
+            return;
         }
-    }
 
-    @EventHandler
-    public void onQuit(PlayerQuitEvent event) {
-        pendingHomes.remove(event.getPlayer().getUniqueId());
-        pendingDeletes.remove(event.getPlayer().getUniqueId());
-        pendingLastTeleports.remove(event.getPlayer().getUniqueId());
-        lastHomeTeleportTimes.remove(event.getPlayer().getUniqueId());
-        lastSpawnTeleportTimes.remove(event.getPlayer().getUniqueId());
-        lastSdTeleportTimes.remove(event.getPlayer().getUniqueId());
+        // Settings Menu
+        if (title.startsWith(GUI_SETTINGS_PREFIX)) {
+            event.setCancelled(true);
+            if (event.getRawSlot() == 26) {
+                openHomeMenu(p);
+                return;
+            }
+
+            String homeNameClean = title.replace(GUI_SETTINGS_PREFIX, "");
+            String uuidStr = p.getUniqueId().toString();
+            int maxHomes = getConfig().getInt("max-homes", 3);
+            int targetIndex = -1;
+
+            for (int i = 0; i < maxHomes; i++) {
+                String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
+                if (name != null && name.equals(homeNameClean)) {
+                    targetIndex = i;
+                    break;
+                }
+            }
+
+            if (targetIndex == -1) return;
+
+            if (event.getRawSlot() == 11) {
+                // Main Home umschalten
+                for (int i = 0; i < maxHomes; i++) {
+                    dataConfig.set("homes." + uuidStr + "." + i + ".isMain", false);
+                }
+                dataConfig.set("homes." + uuidStr + "." + targetIndex + ".isMain", true);
+                saveDataConfig();
+                p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
+                openSettingsMenu(p, targetIndex);
+            } else if (event.getRawSlot() == 15) {
+                // Löschen bestätigen öffnen
+                openConfirmDeleteMenu(p, targetIndex);
+            }
+            return;
+        }
+
+        // Confirm Delete Menu
+        if (title.startsWith(GUI_CONFIRM_PREFIX)) {
+            event.setCancelled(true);
+            if (event.getRawSlot() == 26) {
+                openHomeMenu(p);
+                return;
+            }
+
+            int indexStart = title.lastIndexOf("[");
+            int indexEnd = title.lastIndexOf("]");
+            if (indexStart != -1 && indexEnd != -1 && indexEnd > indexStart) {
+                try {
+                    int slotIndex = Integer.parseInt(title.substring(indexStart + 1, indexEnd));
+                    if (event.getRawSlot() == 12) {
+                        deleteHomeByIndex(p, slotIndex + 1);
+                        p.closeInventory();
+                    } else if (event.getRawSlot() == 14) {
+                        p.closeInventory();
+                        openHomeMenu(p);
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+            return;
+        }
+
+        // Admin Settings Menu
+        if (title.equals(GUI_ADMIN_TITLE)) {
+            event.setCancelled(true);
+            if (event.getRawSlot() == 0) {
+                openHomeMenu(p);
+                return;
+            }
+
+            int maxHomes = getConfig().getInt("max-homes", 3);
+            int[] slots = getSlotsForAmount(maxHomes);
+
+            for (int i = 0; i < slots.length; i++) {
+                if (event.getRawSlot() == slots[i] || event.getRawSlot() == slots[i] + 9) {
+                    String current = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
+                    String next = "OVERWORLD";
+                    if (current.equals("OVERWORLD")) next = "NETHER";
+                    else if (current.equals("NETHER")) next = "END";
+                    else if (current.equals("END")) next = "OVERWORLD";
+
+                    dataConfig.set("admin-slots." + i + ".dimension", next);
+                    saveDataConfig();
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, 1.0f, 1.2f);
+                    openAdminSettingsMenu(p);
+                    break;
+                }
+            }
+        }
     }
 
     // ===== TAB COMPLETER =====
@@ -1278,43 +1176,41 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> list = new ArrayList<>();
-        if (!(sender instanceof Player)) return list;
-        Player p = (Player) sender;
         String cmd = command.getName().toLowerCase();
 
-        if (cmd.equals("homes")) {
+        if (cmd.equals("home") || cmd.equals("homedelete")) {
             if (args.length == 1) {
-                if (p.hasPermission("bannerhomes.admin")) {
-                    list.add("setmax");
-                    list.add("cooldown");
-                }
-            } else if (args.length == 2 && args[0].equalsIgnoreCase("setmax") && p.hasPermission("bannerhomes.admin")) {
-                list.add("0"); list.add("1"); list.add("2"); list.add("3"); list.add("4"); list.add("5");
-            } else if (args.length == 2 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
-                list.add("homes"); list.add("spawn"); list.add("sd");
-            } else if (args.length == 3 && args[0].equalsIgnoreCase("cooldown") && p.hasPermission("bannerhomes.admin")) {
-                list.add("30"); list.add("60"); list.add("120"); list.add("300");
-            }
-        } else if (cmd.equals("home") || cmd.equals("homedelete")) {
-            if (args.length == 1) {
-                String uuidStr = p.getUniqueId().toString();
-                int maxHomes = getConfig().getInt("max-homes", 3);
-                for (int i = 0; i < maxHomes; i++) {
-                    String path = "homes." + uuidStr + "." + i;
-                    if (dataConfig.contains(path + ".name")) {
-                        list.add(dataConfig.getString(path + ".name"));
-                        list.add(String.valueOf(i + 1));
+                list.add("upgrade");
+                if (sender instanceof Player) {
+                    Player p = (Player) sender;
+                    String uuidStr = p.getUniqueId().toString();
+                    int maxHomes = getConfig().getInt("max-homes", 3);
+                    for (int i = 0; i < maxHomes; i++) {
+                        String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
+                        if (name != null) {
+                            list.add(name);
+                            list.add(String.valueOf(i + 1));
+                        }
                     }
                 }
             }
-        } else if (cmd.equals("tp") || cmd.equals("settp")) {
-            if (args.length == 1) {
-                list.add("spawn");
-                list.add("sd");
-                list.add("shoppingdistrict");
+        } else if (cmd.equals("homes")) {
+            if (args.length == 1 && sender.hasPermission("bannerhomes.admin")) {
+                list.add("setmax");
+                list.add("cooldown");
+            }
+        } else if (cmd.equals("settp")) {
+            if (args.length == 2 && sender.hasPermission("bannerhomes.admin")) {
+                list.add("30");
+                list.add("60");
+                list.add("120");
+            }
+        } else if (cmd.equals("tp")) {
+            if (args.length == 1 && dataConfig.contains("global_tps")) {
+                Set<String> keys = dataConfig.getConfigurationSection("global_tps").getKeys(false);
+                list.addAll(keys);
             }
         }
-
         return list;
     }
 }
