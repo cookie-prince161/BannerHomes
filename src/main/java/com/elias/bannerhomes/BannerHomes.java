@@ -49,7 +49,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private final Map<UUID, Long> combatTimers = new HashMap<>();
     private final Map<UUID, Map<String, Long>> globalTpCooldowns = new HashMap<>();
-    private final Map<UUID, Long> globalHomeCooldowns = new HashMap<>(); // Globaler Cooldown für alle Homes
+    private final Map<UUID, Long> globalHomeCooldowns = new HashMap<>();
+    private final Map<UUID, Map<Integer, Long>> homeCooldowns = new HashMap<>();
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -72,7 +73,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("deltp");
         registerCmd("tpdelete");
 
-        getLogger().info("BannerHomes v2.8.0 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.8.1 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -90,6 +91,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         combatTimers.clear();
         globalTpCooldowns.clear();
         globalHomeCooldowns.clear();
+        homeCooldowns.clear();
     }
 
     private void loadDataConfig() {
@@ -373,7 +375,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int currentCdLevel = getCooldownUpgradeLevel(p.getUniqueId());
         int maxUpgrades = getMaxCooldownUpgrades();
 
-        // Cooldown-Upgrades (oben: Slots 2 bis 6)
         for (int i = 0; i < maxUpgrades; i++) {
             int slot = 2 + i;
             boolean unlocked = i < currentCdLevel;
@@ -403,9 +404,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
         int adminMaxHomes = getConfig().getInt("max-homes", 5);
 
-        // Um 1 Slot nach rechts verschoben: Slots 20, 21, 22, 23
         int[] slotUpgradeUIs = {20, 21, 22, 23};
-        int[] slotCosts = {128, 256, 384, 512}; // Exakte Kosten nach deiner Rechnung
+        int[] slotCosts = {128, 256, 384, 512};
 
         for (int slotNum = 2; slotNum <= 5; slotNum++) {
             if (slotNum > adminMaxHomes) continue;
@@ -992,7 +992,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return;
         }
 
-        // Globaler Home-Cooldown Check für alle Homes
         long now = System.currentTimeMillis();
         long effectiveCd = getEffectiveCooldown(p.getUniqueId());
         long cooldownMs = effectiveCd * 1000;
@@ -1010,7 +1009,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         p.teleport(loc);
         globalHomeCooldowns.put(p.getUniqueId(), now);
-        p.sendMessage(ChatColor.GREEN + "Teleportiert to Home '" + dataConfig.getString(path + ".name") + "'!");
+        p.sendMessage(ChatColor.GREEN + "Teleportiert zu Home '" + dataConfig.getString(path + ".name") + "'!");
         p.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
@@ -1074,7 +1073,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerDeath(PlayerDeathEvent event) {
-        combatTimers.remove(event.getEntity().getUniqueId());
+        UUID id = event.getEntity().getUniqueId();
+        combatTimers.remove(id);
+        globalHomeCooldowns.remove(id);
+        homeCooldowns.remove(id);
+        globalTpCooldowns.remove(id);
     }
 
     @EventHandler
@@ -1166,7 +1169,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
             int adminMaxHomes = getConfig().getInt("max-homes", 5);
 
-            // Um 1 Slot nach rechts verschoben: Slots 20, 21, 22, 23
             int[] slotUpgradeUIs = {20, 21, 22, 23};
             int[] slotCosts = {128, 256, 384, 512};
 
