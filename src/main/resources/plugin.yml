@@ -1,36 +1,40 @@
 name: BannerHomes
-version: 1.8.9
+version: 2.3.0
 main: com.elias.bannerhomes.BannerHomes
-api-version: '1.21'
-description: Visuelles Home-System mit Soul-Torch Main-Home, Cooldown-Reset bei Tod, Banner-Bereinigung, Spawn & SD.
+api-version: 1.20
+author: Elias
+description: Home & Global Teleport System mit Banner-Guis und Upgrades.
 
 commands:
-  homes:
-    description: Öffnet das Home-Menü oder ändert Admin-Einstellungen.
-    usage: /homes [setmax <0-5> | cooldown <homes|spawn|sd> <Sekunden>]
-    permission: bannerhomes.use
-  homesettings:
-    description: Öffnet das Admin-Einstellungsmenü für Dimensionen.
-    permission: bannerhomes.admin
   home:
-    description: Teleportiert zum Main-Home oder zu einem bestimmten Home.
+    description: Teleportiert dich zu deinem Main-Home oder einem spezifischen Home.
     usage: /home [Name|Nummer]
-    permission: bannerhomes.use
+  homes:
+    description: Öffnet das Haupt-GUI für deine Homes.
+    usage: /homes
+  homeadmin:
+    description: Öffnet das Admin-Panel zur Einstellung der Slot-Dimensionen und Max-Homes.
+    usage: /homeadmin
+    permission: bannerhomes.admin
+  homesettings:
+    description: Öffnet das Admin-Panel.
+    usage: /homesettings
+    permission: bannerhomes.admin
+  homeupgrades:
+    description: Öffnet das Spieler-Upgrade-Menü für Cooldowns und Homes.
+    usage: /homeupgrades
   homedelete:
     description: Löscht ein bestimmtes Home.
     usage: /homedelete <Name|Nummer>
-    permission: bannerhomes.use
   tp:
-    description: Teleportiert zum Spawn oder Shopping District.
-    usage: /tp <spawn|sd|shoppingdistrict>
-    permission: bannerhomes.use
+    description: Teleportiert zu einem globalen Teleport-Punkt.
+    usage: /tp <name>
   settp:
-    description: Setzt den Spawn oder Shopping District Punkt.
-    usage: /settp <spawn|sd|shoppingdistrict>
+    description: Setzt einen globalen Teleport-Punkt mit optionalem Cooldown.
+    usage: /settp <name> [cooldownSekunden]
     permission: bannerhomes.admin
-
-permissions:
-  bannerhomes.use:
-    default: true
-  bannerhomes.admin:
-    default: op
+  deltp:
+    description: Löscht einen globalen Teleport-Punkt.
+    aliases: [tpdelete]
+    usage: /deltp <name>
+    permission: bannerhomes.admin
