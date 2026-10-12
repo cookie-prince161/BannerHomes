@@ -34,7 +34,7 @@ import java.util.regex.Pattern;
 public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
     private static final String GUI_MAIN_TITLE = ChatColor.DARK_BLUE + "Deine Homes";
-    private static final String GUI_ADMIN_TITLE = ChatColor.DARK_RED + "Admin: Slot-Dimensionen";
+    private static final String GUI_ADMIN_TITLE = ChatColor.DARK_RED + "Admin-Panel: Homes Settings";
     private static final String GUI_BANNER_PREFIX = ChatColor.DARK_PURPLE + "Banner wählen [Slot ";
     private static final String GUI_SETTINGS_PREFIX = ChatColor.DARK_GRAY + "Einstellungen: ";
     private static final String GUI_CONFIRM_PREFIX = ChatColor.DARK_RED + "Löschen bestätigen: ";
@@ -82,7 +82,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("deltp");
         registerCmd("tpdelete");
 
-        getLogger().info("BannerHomes v2.2.0 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.3.0 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -262,7 +262,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     // ===== GUIS =====
 
     public void openHomeMenu(Player p) {
-        // Berücksichtigt sowohl Admin max-homes als auch gekaufte Spieler-Slots
         int adminMax = getConfig().getInt("max-homes", 5);
         int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
         boolean hasNether = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".nether_home", false);
@@ -277,7 +276,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             String path = "homes." + uuidStr + "." + i;
             String dim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
 
-            // Überprüfe ob der Spieler diesen Slot freigeschaltet hat
             boolean isSlotUnlocked = false;
             if (dim.equals("OVERWORLD") && (i + 1) <= unlockedHomes) isSlotUnlocked = true;
             if (dim.equals("NETHER") && hasNether) isSlotUnlocked = true;
@@ -331,7 +329,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 inv.setItem(slot + 9, setItem);
 
             } else {
-                // Wenn Slot nicht gekauft ist -> Gesperrtes Item anzeigen
                 ItemStack placeholder;
                 String dimLabel;
 
@@ -504,21 +501,34 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 item.setItemMeta(meta);
             }
             inv.setItem(slot, item);
-
-            ItemStack blockItem;
-            if (dim.equals("NETHER")) blockItem = new ItemStack(Material.FIRE_CHARGE);
-            else if (dim.equals("END")) blockItem = new ItemStack(Material.ENDER_PEARL);
-            else blockItem = new ItemStack(Material.SLIME_BALL);
-
-            ItemMeta bMeta = blockItem.getItemMeta();
-            if (bMeta != null) {
-                bMeta.setDisplayName(ChatColor.LIGHT_PURPLE + "Dimension: " + dim);
-                blockItem.setItemMeta(bMeta);
-            }
-            inv.setItem(slot + 9, blockItem);
         }
 
-        inv.setItem(0, getBackButton());
+        // Steuerung für Maximale Slot-Anzahl
+        ItemStack minusMax = new ItemStack(Material.REDSTONE_BLOCK);
+        ItemMeta mMinus = minusMax.getItemMeta();
+        if (mMinus != null) {
+            mMinus.setDisplayName(ChatColor.RED + "-1 Max-Homes Slot");
+            minusMax.setItemMeta(mMinus);
+        }
+        inv.setItem(18, minusMax);
+
+        ItemStack maxDisplay = new ItemStack(Material.PAPER);
+        ItemMeta mDisp = maxDisplay.getItemMeta();
+        if (mDisp != null) {
+            mDisp.setDisplayName(ChatColor.YELLOW + "Max-Homes: " + maxHomes);
+            maxDisplay.setItemMeta(mDisp);
+        }
+        inv.setItem(19, maxDisplay);
+
+        ItemStack plusMax = new ItemStack(Material.EMERALD_BLOCK);
+        ItemMeta mPlus = plusMax.getItemMeta();
+        if (mPlus != null) {
+            mPlus.setDisplayName(ChatColor.GREEN + "+1 Max-Homes Slot");
+            plusMax.setItemMeta(mPlus);
+        }
+        inv.setItem(20, plusMax);
+
+        inv.setItem(26, getBackButton());
         p.openInventory(inv);
         p.playSound(p.getLocation(), Sound.BLOCK_CHEST_OPEN, 1.0f, 1.0f);
     }
@@ -591,7 +601,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_SETTINGS_PREFIX + name);
 
-        // Torch (Main-Home)
         ItemStack mainItem = new ItemStack(isMain ? Material.SOUL_TORCH : Material.REDSTONE_TORCH);
         ItemMeta mainMeta = mainItem.getItemMeta();
         if (mainMeta != null) {
@@ -603,7 +612,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(11, mainItem);
 
-        // NEU: Name Tag in der Mitte (Umbenennen)
         ItemStack nameTag = new ItemStack(Material.NAME_TAG);
         ItemMeta nameMeta = nameTag.getItemMeta();
         if (nameMeta != null) {
@@ -615,7 +623,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         }
         inv.setItem(13, nameTag);
 
-        // NEU: Barrier Block statt Lava Bucket
         ItemStack del = new ItemStack(Material.BARRIER);
         ItemMeta delMeta = del.getItemMeta();
         if (delMeta != null) {
@@ -719,47 +726,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
                 return true;
             }
-            p.sendMessage(ChatColor.GOLD + "=== BannerHomes Admin Settings ===");
-            p.sendMessage(ChatColor.YELLOW + "/homes setmax <1-5> " + ChatColor.GRAY + "- Maximale Slot-Anzahl");
-            p.sendMessage(ChatColor.YELLOW + "/homes cooldown <Sekunden> " + ChatColor.GRAY + "- Basis Cooldown");
+            openAdminSettingsMenu(p);
             return true;
         }
 
         if (cmdName.equals("homes")) {
-            if (args.length >= 2 && p.hasPermission("bannerhomes.admin")) {
-                if (args[0].equalsIgnoreCase("setmax")) {
-                    try {
-                        int max = Integer.parseInt(args[1]);
-                        if (max < 1 || max > 5) {
-                            p.sendMessage(ChatColor.RED + "Bitte eine Zahl zwischen 1 und 5 angeben.");
-                            return true;
-                        }
-                        getConfig().set("max-homes", max);
-                        saveConfig();
-                        p.sendMessage(ChatColor.GREEN + "Maximale Anzahl an Homes auf " + max + " gesetzt.");
-                        return true;
-                    } catch (NumberFormatException e) {
-                        p.sendMessage(ChatColor.RED + "Das ist keine gültige Zahl.");
-                        return true;
-                    }
-                } else if (args[0].equalsIgnoreCase("cooldown")) {
-                    try {
-                        long cd = Long.parseLong(args[1]);
-                        if (cd < 0) {
-                            p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
-                            return true;
-                        }
-                        getConfig().set("base_cooldown_seconds", cd);
-                        saveConfig();
-                        p.sendMessage(ChatColor.GREEN + "Basis Home-Cooldown auf " + cd + " Sekunden gesetzt.");
-                        return true;
-                    } catch (NumberFormatException e) {
-                        p.sendMessage(ChatColor.RED + "Ungültiger Wert.");
-                        return true;
-                    }
-                }
-            }
-
             openHomeMenu(p);
             return true;
         }
@@ -775,9 +746,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     if (pendingDeletes.containsKey(p.getUniqueId()) && pendingDeletes.get(p.getUniqueId()) == index) {
                         pendingDeletes.remove(p.getUniqueId());
                         deleteHomeByIndex(p, index);
-                    } else if (pendingLastTeleports.containsKey(p.getUniqueId()) && pendingLastTeleports.get(p.getUniqueId()) == index) {
-                        pendingLastTeleports.remove(p.getUniqueId());
-                        executeLastTeleportAndClear(p, index);
                     } else {
                         p.sendMessage(ChatColor.RED + "Ungültige oder abgelaufene Anfrage.");
                     }
@@ -788,7 +756,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
             if (args[0].equalsIgnoreCase("cancel")) {
                 pendingDeletes.remove(p.getUniqueId());
-                pendingLastTeleports.remove(p.getUniqueId());
                 p.sendMessage(ChatColor.YELLOW + "Vorgang abgebrochen.");
                 return true;
             }
@@ -960,10 +927,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         saveDataConfig();
         p.sendMessage(ChatColor.GREEN + "Home erfolgreich gelöscht.");
         p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_DESTROY, 1.0f, 1.0f);
-    }
-
-    private void executeLastTeleportAndClear(Player p, int index) {
-        p.sendMessage(ChatColor.GREEN + "Teleport ausgeführt.");
     }
 
     private int getMainHomeIndex(Player p) {
@@ -1314,7 +1277,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 String uuidStr = p.getUniqueId().toString();
                 String path = "homes." + uuidStr + "." + slotIndex;
 
-                // BEHOBEN: Wenn das Home schon existierte, behalte Location und Name!
                 if (!dataConfig.contains(path + ".name")) {
                     dataConfig.set(path + ".name", "Home " + (slotIndex + 1));
                     dataConfig.set(path + ".location", p.getLocation());
@@ -1358,7 +1320,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (targetIndex == -1) return;
 
             if (event.getRawSlot() == 11) {
-                // Main Home Torch
                 for (int i = 0; i < maxHomes; i++) {
                     dataConfig.set("homes." + uuidStr + "." + i + ".isMain", false);
                 }
@@ -1367,12 +1328,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
                 openSettingsMenu(p, targetIndex);
             } else if (event.getRawSlot() == 13) {
-                // Nametag Klick -> Umbenennen
                 renamingHomeSlots.put(p.getUniqueId(), targetIndex);
                 p.closeInventory();
                 p.sendMessage(ChatColor.YELLOW + "Schreibe jetzt den neuen Namen für dein Home in den Chat:");
             } else if (event.getRawSlot() == 15) {
-                // Barrier Klick -> Löschen bestätigen
                 openConfirmDeleteMenu(p, targetIndex);
             }
             return;
@@ -1406,7 +1365,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         // Admin Settings Menu
         if (title.equals(GUI_ADMIN_TITLE)) {
             event.setCancelled(true);
-            if (event.getRawSlot() == 0) {
+            if (event.getRawSlot() == 26) {
                 openHomeMenu(p);
                 return;
             }
@@ -1414,8 +1373,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             int maxHomes = getConfig().getInt("max-homes", 5);
             int[] slots = getSlotsForAmount(maxHomes);
 
+            // Dimensionen wechseln
             for (int i = 0; i < slots.length; i++) {
-                if (event.getRawSlot() == slots[i] || event.getRawSlot() == slots[i] + 9) {
+                if (event.getRawSlot() == slots[i]) {
                     String current = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                     String next = "OVERWORLD";
                     if (current.equals("OVERWORLD")) next = "NETHER";
@@ -1426,7 +1386,22 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     saveDataConfig();
                     p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, 1.0f, 1.2f);
                     openAdminSettingsMenu(p);
-                    break;
+                    return;
+                }
+            }
+
+            // Max-Homes verringern/erhöhen
+            if (event.getRawSlot() == 18) { // Minus 1
+                if (maxHomes > 1) {
+                    getConfig().set("max-homes", maxHomes - 1);
+                    saveConfig();
+                    openAdminSettingsMenu(p);
+                }
+            } else if (event.getRawSlot() == 20) { // Plus 1
+                if (maxHomes < 5) {
+                    getConfig().set("max-homes", maxHomes + 1);
+                    saveConfig();
+                    openAdminSettingsMenu(p);
                 }
             }
         }
