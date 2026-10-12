@@ -49,7 +49,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private final Map<UUID, Long> combatTimers = new HashMap<>();
     private final Map<UUID, Map<String, Long>> globalTpCooldowns = new HashMap<>();
-    private final Map<UUID, Map<Integer, Long>> homeCooldowns = new HashMap<>();
+    private final Map<UUID, Long> globalHomeCooldowns = new HashMap<>(); // Globaler Cooldown für alle Homes
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -72,7 +72,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         registerCmd("deltp");
         registerCmd("tpdelete");
 
-        getLogger().info("BannerHomes v2.7.0 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.8.0 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -89,7 +89,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         renamingHomeSlots.clear();
         combatTimers.clear();
         globalTpCooldowns.clear();
-        homeCooldowns.clear();
+        globalHomeCooldowns.clear();
     }
 
     private void loadDataConfig() {
@@ -403,12 +403,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
         int adminMaxHomes = getConfig().getInt("max-homes", 5);
 
-        // Dynamische Home-Slot Upgrades (unten: Slots 19, 20, 21, 22 für Slots 2 bis 5)
-        int[] slotUpgradeUIs = {19, 20, 21, 22};
-        int[] slotCosts = {128, 256, 512, 1024};
+        // Um 1 Slot nach rechts verschoben: Slots 20, 21, 22, 23
+        int[] slotUpgradeUIs = {20, 21, 22, 23};
+        int[] slotCosts = {128, 256, 384, 512}; // Exakte Kosten nach deiner Rechnung
 
         for (int slotNum = 2; slotNum <= 5; slotNum++) {
-            if (slotNum > adminMaxHomes) continue; // Überspringen, wenn Admin max-homes niedriger eingestellt hat
+            if (slotNum > adminMaxHomes) continue;
 
             int uiSlot = slotUpgradeUIs[slotNum - 2];
             boolean isUnlocked = unlockedHomes >= slotNum;
@@ -672,7 +672,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
                 return true;
             }
-            // Admin Reset Befehl: /homeadmin reset <spieler>
             if (args.length >= 2 && args[0].equalsIgnoreCase("reset")) {
                 Player target = Bukkit.getPlayer(args[1]);
                 if (target == null) {
@@ -993,27 +992,25 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return;
         }
 
+        // Globaler Home-Cooldown Check für alle Homes
         long now = System.currentTimeMillis();
         long effectiveCd = getEffectiveCooldown(p.getUniqueId());
         long cooldownMs = effectiveCd * 1000;
 
-        homeCooldowns.putIfAbsent(p.getUniqueId(), new HashMap<>());
-        Map<Integer, Long> uCdMap = homeCooldowns.get(p.getUniqueId());
-
-        if (uCdMap.containsKey(index)) {
-            long lastTime = uCdMap.get(index);
+        if (globalHomeCooldowns.containsKey(p.getUniqueId())) {
+            long lastTime = globalHomeCooldowns.get(p.getUniqueId());
             long diff = now - lastTime;
             if (diff < cooldownMs && effectiveCd > 0) {
                 long remainingSec = (cooldownMs - diff) / 1000;
-                p.sendMessage(ChatColor.RED + "Du musst noch " + remainingSec + "s warten, bevor du dieses Home wieder nutzen kannst.");
+                p.sendMessage(ChatColor.RED + "Du musst noch " + remainingSec + "s warten, bevor du dich wieder zu einem Home teleportieren kannst.");
                 p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 return;
             }
         }
 
         p.teleport(loc);
-        uCdMap.put(index, now);
-        p.sendMessage(ChatColor.GREEN + "Teleportiert zu Home '" + dataConfig.getString(path + ".name") + "'!");
+        globalHomeCooldowns.put(p.getUniqueId(), now);
+        p.sendMessage(ChatColor.GREEN + "Teleportiert to Home '" + dataConfig.getString(path + ".name") + "'!");
         p.playSound(loc, Sound.ENTITY_ENDERMAN_TELEPORT, 1.0f, 1.0f);
     }
 
@@ -1085,6 +1082,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         pendingDeletes.remove(event.getPlayer().getUniqueId());
         pendingLastTeleports.remove(event.getPlayer().getUniqueId());
         renamingHomeSlots.remove(event.getPlayer().getUniqueId());
+        globalHomeCooldowns.remove(event.getPlayer().getUniqueId());
     }
 
     @EventHandler
@@ -1168,9 +1166,9 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
             int adminMaxHomes = getConfig().getInt("max-homes", 5);
 
-            // Klick-Logik für dynamische Home-Slots (19 = Slot #2, 20 = Slot #3, 21 = Slot #4, 22 = Slot #5)
-            int[] slotUpgradeUIs = {19, 20, 21, 22};
-            int[] slotCosts = {128, 256, 512, 1024};
+            // Um 1 Slot nach rechts verschoben: Slots 20, 21, 22, 23
+            int[] slotUpgradeUIs = {20, 21, 22, 23};
+            int[] slotCosts = {128, 256, 384, 512};
 
             for (int slotNum = 2; slotNum <= 5; slotNum++) {
                 if (slotNum > adminMaxHomes) continue;
