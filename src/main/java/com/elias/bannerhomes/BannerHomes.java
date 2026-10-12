@@ -33,21 +33,18 @@ import java.util.regex.Pattern;
 public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
 
     private static final String GUI_MAIN_TITLE = ChatColor.DARK_BLUE + "Deine Homes";
-    private static final String GUI_ADMIN_TITLE = ChatColor.DARK_RED + "Admin: Homes Settings";
+    private static final String GUI_ADMIN_TITLE = ChatColor.DARK_RED + "Admin: Slot-Dimensionen";
     private static final String GUI_BANNER_PREFIX = ChatColor.DARK_PURPLE + "Banner wählen [Slot ";
     private static final String GUI_SETTINGS_PREFIX = ChatColor.DARK_GRAY + "Einstellungen: ";
     private static final String GUI_CONFIRM_PREFIX = ChatColor.DARK_RED + "Löschen bestätigen: ";
-    private static final String GUI_UPGRADE_TITLE = ChatColor.DARK_AQUA + "Cooldown Upgrades";
+    private static final String GUI_UPGRADE_TITLE = ChatColor.DARK_AQUA + "Home & Cooldown Upgrades";
 
     private final Map<UUID, PendingHome> pendingHomes = new HashMap<>();
     private final Map<UUID, Integer> pendingDeletes = new HashMap<>();
     private final Map<UUID, Integer> pendingLastTeleports = new HashMap<>();
 
-    // Speichert den letzten Kampf-Zeitpunkt: UUID -> Timestamp (ms)
     private final Map<UUID, Long> combatTimers = new HashMap<>();
-    // Global TP Cooldowns: UUID -> (TPName -> Timestamp)
     private final Map<UUID, Map<String, Long>> globalTpCooldowns = new HashMap<>();
-    // Home Cooldowns: UUID -> (HomeIndex -> Timestamp)
     private final Map<UUID, Map<Integer, Long>> homeCooldowns = new HashMap<>();
 
     private File dataFile;
@@ -74,12 +71,15 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
         registerCmd("homes");
         registerCmd("homesettings");
+        registerCmd("homeadmin");
+        registerCmd("homeupgrades");
         registerCmd("home");
         registerCmd("homedelete");
         registerCmd("tp");
         registerCmd("settp");
+        registerCmd("deltp");
 
-        getLogger().info("BannerHomes v2.0 erfolgreich aktiviert!");
+        getLogger().info("BannerHomes v2.1.0 erfolgreich aktiviert!");
     }
 
     private void registerCmd(String name) {
@@ -123,11 +123,11 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     // ===== UPGRADE & COOLDOWN HELPERS =====
 
     public int getBaseCooldownSeconds() {
-        return getConfig().getInt("base_cooldown_seconds", 300); // Standard: 5 Min
+        return getConfig().getInt("base_cooldown_seconds", 300);
     }
 
     public int getCooldownReductionPerUpgrade() {
-        return getConfig().getInt("cooldown_reduction_per_upgrade", 30); // 30 Sek pro Stufe
+        return getConfig().getInt("cooldown_reduction_per_upgrade", 30);
     }
 
     public int getMaxCooldownUpgrades() {
@@ -164,6 +164,32 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         long lastCombat = combatTimers.get(p.getUniqueId());
         long elapsedSec = (System.currentTimeMillis() - lastCombat) / 1000;
         return Math.max(0, combatDuration - elapsedSec);
+    }
+
+    private boolean removeDiamonds(Player p, int amount) {
+        int count = 0;
+        for (ItemStack is : p.getInventory().getContents()) {
+            if (is != null && is.getType() == Material.DIAMOND) {
+                count += is.getAmount();
+            }
+        }
+        if (count < amount) return false;
+
+        int left = amount;
+        for (int i = 0; i < p.getInventory().getSize(); i++) {
+            ItemStack is = p.getInventory().getItem(i);
+            if (is != null && is.getType() == Material.DIAMOND) {
+                if (is.getAmount() <= left) {
+                    left -= is.getAmount();
+                    p.getInventory().setItem(i, null);
+                } else {
+                    is.setAmount(is.getAmount() - left);
+                    left = 0;
+                }
+                if (left <= 0) break;
+            }
+        }
+        return true;
     }
 
     private int[] getSlotsForAmount(int amount) {
@@ -232,12 +258,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
     // ===== GUIS =====
 
     public void openHomeMenu(Player p) {
-        int maxHomes = getConfig().getInt("max-homes", 3);
-        if (maxHomes <= 0) {
-            p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
-            return;
-        }
-
+        int maxHomes = getConfig().getInt("max-homes", 5);
         Inventory inv = Bukkit.createInventory(null, 27, GUI_MAIN_TITLE);
         int[] slots = getSlotsForAmount(maxHomes);
         String uuidStr = p.getUniqueId().toString();
@@ -321,14 +342,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // Upgrade-Clock unten rechts hinzufügen (Slot 26)
         ItemStack upgradeClock = new ItemStack(Material.CLOCK);
         ItemMeta uMeta = upgradeClock.getItemMeta();
         if (uMeta != null) {
-            uMeta.setDisplayName(ChatColor.AQUA + "Cooldown Upgrades");
+            uMeta.setDisplayName(ChatColor.AQUA + "Home & Cooldown Upgrades");
             List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Klicke, um deine Teleport-Cooldowns");
-            lore.add(ChatColor.GRAY + "durch Upgrades zu verringern!");
+            lore.add(ChatColor.GRAY + "Klicke, um Upgrades zu kaufen!");
             uMeta.setLore(lore);
             upgradeClock.setItemMeta(uMeta);
         }
@@ -340,24 +359,27 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     public void openUpgradeGUI(Player p) {
         Inventory inv = Bukkit.createInventory(null, 27, GUI_UPGRADE_TITLE);
-        int currentLevel = getCooldownUpgradeLevel(p.getUniqueId());
+        int currentCdLevel = getCooldownUpgradeLevel(p.getUniqueId());
         int maxUpgrades = getMaxCooldownUpgrades();
 
+        // 1. OBERSTE REIHE (Slots 2 bis 6 / -9 von der Mitte): Cooldown-Uhren
         for (int i = 0; i < maxUpgrades; i++) {
-            int slot = 11 + i; // Mittig in Slots 11-15
-            boolean unlocked = i < currentLevel;
+            int slot = 2 + i;
+            boolean unlocked = i < currentCdLevel;
+            int cost = (i + 1) * 32; // Halber Stack mehr pro Upgrade (32, 64, 96, 128, 160)
 
             ItemStack clock = new ItemStack(unlocked ? Material.LIME_DYE : Material.CLOCK);
             ItemMeta meta = clock.getItemMeta();
             if (meta != null) {
-                meta.setDisplayName(ChatColor.AQUA + "Upgrade Stufe " + (i + 1));
+                meta.setDisplayName(ChatColor.AQUA + "Cooldown Upgrade Stufe " + (i + 1));
                 List<String> lore = new ArrayList<>();
-                lore.add(ChatColor.GRAY + "Verringert den Cooldown um " + getCooldownReductionPerUpgrade() + "s.");
+                lore.add(ChatColor.GRAY + "Verringert Cooldown um " + getCooldownReductionPerUpgrade() + "s");
+                lore.add(ChatColor.GRAY + "Kosten: " + ChatColor.GOLD + cost + " Diamanten");
                 lore.add("");
                 if (unlocked) {
                     lore.add(ChatColor.GREEN + "✔ Bereits freigeschaltet");
-                } else if (i == currentLevel) {
-                    lore.add(ChatColor.YELLOW + "Klicke zum Freischalten!");
+                } else if (i == currentCdLevel) {
+                    lore.add(ChatColor.YELLOW + "Klicke zum Kaufen!");
                 } else {
                     lore.add(ChatColor.RED + "🔒 Schalte zuerst Stufe " + i + " frei");
                 }
@@ -367,13 +389,69 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             inv.setItem(slot, clock);
         }
 
+        // 2. UNTERSTE REIHE (Slots 20 bis 23 / +18 von den Uhren): Weiße Banner für Home-Freischaltungen
+        int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
+
+        // Overworld Home 2 (2 Stacks = 128 Dias)
+        ItemStack ow2 = new ItemStack(unlockedHomes >= 2 ? Material.LIME_DYE : Material.WHITE_BANNER);
+        ItemMeta mOw2 = ow2.getItemMeta();
+        if (mOw2 != null) {
+            mOw2.setDisplayName(ChatColor.GOLD + "Overworld Home #2");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Kosten: " + ChatColor.GOLD + "128 Diamanten (2 Stacks)");
+            lore.add(unlockedHomes >= 2 ? ChatColor.GREEN + "✔ Freigeschaltet" : ChatColor.YELLOW + "Klicke zum Kaufen");
+            mOw2.setLore(lore);
+            ow2.setItemMeta(mOw2);
+        }
+        inv.setItem(20, ow2);
+
+        // Overworld Home 3 (4 Stacks = 256 Dias)
+        ItemStack ow3 = new ItemStack(unlockedHomes >= 3 ? Material.LIME_DYE : Material.WHITE_BANNER);
+        ItemMeta mOw3 = ow3.getItemMeta();
+        if (mOw3 != null) {
+            mOw3.setDisplayName(ChatColor.GOLD + "Overworld Home #3");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Kosten: " + ChatColor.GOLD + "256 Diamanten (4 Stacks)");
+            lore.add(unlockedHomes >= 3 ? ChatColor.GREEN + "✔ Freigeschaltet" : (unlockedHomes < 2 ? ChatColor.RED + "🔒 Benötigt Home #2" : ChatColor.YELLOW + "Klicke zum Kaufen"));
+            mOw3.setLore(lore);
+            ow3.setItemMeta(mOw3);
+        }
+        inv.setItem(21, ow3);
+
+        // Nether Home (1 Stack = 64 Dias)
+        boolean hasNether = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".nether_home", false);
+        ItemStack netherItem = new ItemStack(hasNether ? Material.LIME_DYE : Material.WHITE_BANNER);
+        ItemMeta mNether = netherItem.getItemMeta();
+        if (mNether != null) {
+            mNether.setDisplayName(ChatColor.RED + "Nether Home");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Kosten: " + ChatColor.GOLD + "64 Diamanten (1 Stack)");
+            lore.add(hasNether ? ChatColor.GREEN + "✔ Freigeschaltet" : ChatColor.YELLOW + "Klicke zum Kaufen");
+            mNether.setLore(lore);
+            netherItem.setItemMeta(mNether);
+        }
+        inv.setItem(22, netherItem);
+
+        // End Home (1 Stack = 64 Dias)
+        boolean hasEnd = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".end_home", false);
+        ItemStack endItem = new ItemStack(hasEnd ? Material.LIME_DYE : Material.WHITE_BANNER);
+        ItemMeta mEnd = endItem.getItemMeta();
+        if (mEnd != null) {
+            mEnd.setDisplayName(ChatColor.DARK_PURPLE + "End Home");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "Kosten: " + ChatColor.GOLD + "64 Diamanten (1 Stack)");
+            lore.add(hasEnd ? ChatColor.GREEN + "✔ Freigeschaltet" : ChatColor.YELLOW + "Klicke zum Kaufen");
+            mEnd.setLore(lore);
+            endItem.setItemMeta(mEnd);
+        }
+        inv.setItem(23, endItem);
+
         inv.setItem(26, getBackButton());
         p.openInventory(inv);
     }
 
     public void openAdminSettingsMenu(Player p) {
-        int maxHomes = getConfig().getInt("max-homes", 3);
-        if (maxHomes <= 0) maxHomes = 1;
+        int maxHomes = getConfig().getInt("max-homes", 5);
 
         Inventory inv = Bukkit.createInventory(null, 27, GUI_ADMIN_TITLE);
         int[] slots = getSlotsForAmount(maxHomes);
@@ -578,7 +656,8 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         Player p = (Player) sender;
         String cmdName = command.getName().toLowerCase();
 
-        if (cmdName.equals("homesettings")) {
+        // 1. /homeadmin (Admin Slot-Dimensionen)
+        if (cmdName.equals("homeadmin")) {
             if (!p.hasPermission("bannerhomes.admin")) {
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
                 return true;
@@ -587,13 +666,32 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
+        // 2. /homeupgrades (Spieler-Upgrades)
+        if (cmdName.equals("homeupgrades")) {
+            openUpgradeGUI(p);
+            return true;
+        }
+
+        // 3. /homesettings (Global Admin Einstellungen)
+        if (cmdName.equals("homesettings")) {
+            if (!p.hasPermission("bannerhomes.admin")) {
+                p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
+                return true;
+            }
+            p.sendMessage(ChatColor.GOLD + "=== BannerHomes Admin Settings ===");
+            p.sendMessage(ChatColor.YELLOW + "/homes setmax <1-5> " + ChatColor.GRAY + "- Maximale Slot-Anzahl");
+            p.sendMessage(ChatColor.YELLOW + "/homes cooldown <Sekunden> " + ChatColor.GRAY + "- Basis Cooldown");
+            return true;
+        }
+
+        // 4. /homes
         if (cmdName.equals("homes")) {
             if (args.length >= 2 && p.hasPermission("bannerhomes.admin")) {
                 if (args[0].equalsIgnoreCase("setmax")) {
                     try {
                         int max = Integer.parseInt(args[1]);
-                        if (max < 0 || max > 5) {
-                            p.sendMessage(ChatColor.RED + "Bitte eine Zahl zwischen 0 und 5 angeben.");
+                        if (max < 1 || max > 5) {
+                            p.sendMessage(ChatColor.RED + "Bitte eine Zahl zwischen 1 und 5 angeben.");
                             return true;
                         }
                         getConfig().set("max-homes", max);
@@ -605,34 +703,28 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                         return true;
                     }
                 } else if (args[0].equalsIgnoreCase("cooldown")) {
-                    if (args.length == 2) {
-                        try {
-                            long cd = Long.parseLong(args[1]);
-                            if (cd < 0) {
-                                p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
-                                return true;
-                            }
-                            getConfig().set("base_cooldown_seconds", cd);
-                            saveConfig();
-                            p.sendMessage(ChatColor.GREEN + "Basis Home-Cooldown auf " + cd + " Sekunden gesetzt.");
-                            return true;
-                        } catch (NumberFormatException e) {
-                            p.sendMessage(ChatColor.RED + "Ungültiger Wert.");
+                    try {
+                        long cd = Long.parseLong(args[1]);
+                        if (cd < 0) {
+                            p.sendMessage(ChatColor.RED + "Der Cooldown darf nicht negativ sein.");
                             return true;
                         }
+                        getConfig().set("base_cooldown_seconds", cd);
+                        saveConfig();
+                        p.sendMessage(ChatColor.GREEN + "Basis Home-Cooldown auf " + cd + " Sekunden gesetzt.");
+                        return true;
+                    } catch (NumberFormatException e) {
+                        p.sendMessage(ChatColor.RED + "Ungültiger Wert.");
+                        return true;
                     }
                 }
             }
 
-            int maxHomes = getConfig().getInt("max-homes", 3);
-            if (maxHomes <= 0) {
-                p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
-                return true;
-            }
             openHomeMenu(p);
             return true;
         }
 
+        // 5. /homedelete
         if (cmdName.equals("homedelete")) {
             if (args.length == 0) {
                 p.sendMessage(ChatColor.RED + "Benutzung: /homedelete <Name|Nummer>");
@@ -665,18 +757,10 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
+        // 6. /home
         if (cmdName.equals("home")) {
-            int maxHomes = getConfig().getInt("max-homes", 3);
-            if (maxHomes <= 0) {
-                p.sendMessage(ChatColor.RED + "Das Home-Feature ist derzeit abgeschaltet.");
-                return true;
-            }
-
             if (args.length == 0) {
                 teleportWithValidation(p, getMainHomeIndex(p));
-                return true;
-            } else if (args[0].equalsIgnoreCase("upgrade")) {
-                openUpgradeGUI(p);
                 return true;
             } else {
                 teleportToHomeByArg(p, args[0]);
@@ -684,7 +768,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
         }
 
-        // Dynamisches Globales TP System: /settp <name> [cooldownSekunden]
+        // 7. /settp <name> [cooldownSekunden]
         if (cmdName.equals("settp")) {
             if (!p.hasPermission("bannerhomes.admin")) {
                 p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
@@ -696,7 +780,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             }
 
             String tpName = args[0].toLowerCase();
-            long customCd = 60; // Standard Global-TP Cooldown
+            long customCd = 60;
             if (args.length >= 2) {
                 try {
                     customCd = Long.parseLong(args[1]);
@@ -709,7 +793,31 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             return true;
         }
 
-        // Dynamisches Globales TP System: /tp <name>
+        // 8. /deltp <name>
+        if (cmdName.equals("deltp")) {
+            if (!p.hasPermission("bannerhomes.admin")) {
+                p.sendMessage(ChatColor.RED + "Dazu hast du keine Rechte.");
+                return true;
+            }
+            if (args.length == 0) {
+                p.sendMessage(ChatColor.RED + "Benutzung: /deltp <name>");
+                return true;
+            }
+
+            String tpName = args[0].toLowerCase();
+            if (!dataConfig.contains("global_tps." + tpName)) {
+                p.sendMessage(ChatColor.RED + "Dieser Teleportpunkt existiert nicht.");
+                return true;
+            }
+
+            dataConfig.set("global_tps." + tpName, null);
+            saveDataConfig();
+            p.sendMessage(ChatColor.GREEN + "Teleportpunkt '" + tpName + "' erfolgreich gelöscht!");
+            p.playSound(p.getLocation(), Sound.BLOCK_ANVIL_DESTROY, 1.0f, 1.0f);
+            return true;
+        }
+
+        // 9. /tp <name>
         if (cmdName.equals("tp")) {
             if (args.length == 0) {
                 p.sendMessage(ChatColor.RED + "Benutzung: /tp <name>");
@@ -782,7 +890,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private void requestInteractiveDelete(Player p, String arg) {
         String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
+        int maxHomes = getConfig().getInt("max-homes", 5);
         int targetIndex = -1;
 
         try {
@@ -825,7 +933,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private int getMainHomeIndex(Player p) {
         String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
+        int maxHomes = getConfig().getInt("max-homes", 5);
         for (int i = 0; i < maxHomes; i++) {
             if (dataConfig.getBoolean("homes." + uuidStr + "." + i + ".isMain", false)) {
                 return i;
@@ -886,7 +994,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     private void teleportToHomeByArg(Player p, String arg) {
         String uuidStr = p.getUniqueId().toString();
-        int maxHomes = getConfig().getInt("max-homes", 3);
+        int maxHomes = getConfig().getInt("max-homes", 5);
         int targetIndex = -1;
 
         try {
@@ -929,7 +1037,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerDeath(PlayerDeathEvent event) {
-        // Timer beim Tod zurücksetzen, damit nach Respawn sofort alles wieder nutzbar ist
         combatTimers.remove(event.getEntity().getUniqueId());
     }
 
@@ -939,31 +1046,105 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         Player p = (Player) event.getWhoClicked();
         String title = event.getView().getTitle();
 
-        // Upgrades Menü Klicks
+        // 1. Upgrades Menü Klicks
         if (title.equals(GUI_UPGRADE_TITLE)) {
             event.setCancelled(true);
             int slot = event.getRawSlot();
-            int currentLevel = getCooldownUpgradeLevel(p.getUniqueId());
-            int maxUpgrades = getMaxCooldownUpgrades();
 
-            if (slot == 26) { // Zurück-Button
+            if (slot == 26) {
                 openHomeMenu(p);
                 return;
             }
 
+            int currentCdLevel = getCooldownUpgradeLevel(p.getUniqueId());
+            int maxUpgrades = getMaxCooldownUpgrades();
+
+            // Cooldown Upgrades (Slots 2-6)
             for (int i = 0; i < maxUpgrades; i++) {
-                if (slot == 11 + i) {
-                    if (i == currentLevel) {
-                        setCooldownUpgradeLevel(p.getUniqueId(), currentLevel + 1);
-                        p.sendMessage(ChatColor.GREEN + "Cooldown-Upgrade Stufe " + (i + 1) + " erfolgreich freigeschaltet!");
-                        p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
-                        openUpgradeGUI(p);
-                    } else if (i < currentLevel) {
+                if (slot == 2 + i) {
+                    if (i == currentCdLevel) {
+                        int cost = (i + 1) * 32;
+                        if (removeDiamonds(p, cost)) {
+                            setCooldownUpgradeLevel(p.getUniqueId(), currentCdLevel + 1);
+                            p.sendMessage(ChatColor.GREEN + "Cooldown-Upgrade Stufe " + (i + 1) + " gekauft!");
+                            p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                            openUpgradeGUI(p);
+                        } else {
+                            p.sendMessage(ChatColor.RED + "Du benötigst " + cost + " Diamanten in deinem Inventar!");
+                        }
+                    } else if (i < currentCdLevel) {
                         p.sendMessage(ChatColor.YELLOW + "Du hast diese Stufe bereits freigeschaltet!");
                     } else {
                         p.sendMessage(ChatColor.RED + "Du musst die vorherigen Stufen zuerst kaufen!");
                     }
-                    break;
+                    return;
+                }
+            }
+
+            // Home Slots Upgrades (Slots 20-23)
+            int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
+
+            if (slot == 20) { // Overworld Home 2 (128 Dias)
+                if (unlockedHomes >= 2) {
+                    p.sendMessage(ChatColor.YELLOW + "Bereits gekauft!");
+                    return;
+                }
+                if (removeDiamonds(p, 128)) {
+                    dataConfig.set("upgrades." + p.getUniqueId() + ".unlocked_homes", 2);
+                    saveDataConfig();
+                    p.sendMessage(ChatColor.GREEN + "Overworld Home #2 erfolgreich freigeschaltet!");
+                    p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                    openUpgradeGUI(p);
+                } else {
+                    p.sendMessage(ChatColor.RED + "Du benötigst 128 Diamanten (2 Stacks)!");
+                }
+            } else if (slot == 21) { // Overworld Home 3 (256 Dias)
+                if (unlockedHomes < 2) {
+                    p.sendMessage(ChatColor.RED + "Du musst zuerst Home #2 kaufen!");
+                    return;
+                }
+                if (unlockedHomes >= 3) {
+                    p.sendMessage(ChatColor.YELLOW + "Bereits gekauft!");
+                    return;
+                }
+                if (removeDiamonds(p, 256)) {
+                    dataConfig.set("upgrades." + p.getUniqueId() + ".unlocked_homes", 3);
+                    saveDataConfig();
+                    p.sendMessage(ChatColor.GREEN + "Overworld Home #3 erfolgreich freigeschaltet!");
+                    p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                    openUpgradeGUI(p);
+                } else {
+                    p.sendMessage(ChatColor.RED + "Du benötigst 256 Diamanten (4 Stacks)!");
+                }
+            } else if (slot == 22) { // Nether Home (64 Dias)
+                boolean hasNether = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".nether_home", false);
+                if (hasNether) {
+                    p.sendMessage(ChatColor.YELLOW + "Bereits gekauft!");
+                    return;
+                }
+                if (removeDiamonds(p, 64)) {
+                    dataConfig.set("upgrades." + p.getUniqueId() + ".nether_home", true);
+                    saveDataConfig();
+                    p.sendMessage(ChatColor.GREEN + "Nether Home erfolgreich freigeschaltet!");
+                    p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                    openUpgradeGUI(p);
+                } else {
+                    p.sendMessage(ChatColor.RED + "Du benötigst 64 Diamanten (1 Stack)!");
+                }
+            } else if (slot == 23) { // End Home (64 Dias)
+                boolean hasEnd = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".end_home", false);
+                if (hasEnd) {
+                    p.sendMessage(ChatColor.YELLOW + "Bereits gekauft!");
+                    return;
+                }
+                if (removeDiamonds(p, 64)) {
+                    dataConfig.set("upgrades." + p.getUniqueId() + ".end_home", true);
+                    saveDataConfig();
+                    p.sendMessage(ChatColor.GREEN + "End Home erfolgreich freigeschaltet!");
+                    p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.0f);
+                    openUpgradeGUI(p);
+                } else {
+                    p.sendMessage(ChatColor.RED + "Du benötigst 64 Diamanten (1 Stack)!");
                 }
             }
             return;
@@ -974,28 +1155,45 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             event.setCancelled(true);
             int slot = event.getRawSlot();
 
-            if (slot == 26) { // Upgrade Clock Klick
+            if (slot == 26) {
                 openUpgradeGUI(p);
                 return;
             }
 
-            int maxHomes = getConfig().getInt("max-homes", 3);
+            int maxHomes = getConfig().getInt("max-homes", 5);
             int[] slots = getSlotsForAmount(maxHomes);
 
             for (int i = 0; i < slots.length; i++) {
                 int homeSlot = slots[i];
                 if (slot == homeSlot) {
-                    // Teleport oder Erstellen
                     String path = "homes." + p.getUniqueId().toString() + "." + i;
                     if (dataConfig.contains(path + ".name")) {
                         p.closeInventory();
                         teleportWithValidation(p, i);
                     } else {
-                        // Erstellen prüfen
                         String slotDim = dataConfig.getString("admin-slots." + i + ".dimension", "OVERWORLD");
                         String playerDim = getDimensionName(p.getWorld().getEnvironment());
+
+                        // Slot-Freischaltungs-Prüfungen
+                        int unlockedHomes = dataConfig.getInt("upgrades." + p.getUniqueId() + ".unlocked_homes", 1);
+                        boolean hasNether = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".nether_home", false);
+                        boolean hasEnd = dataConfig.getBoolean("upgrades." + p.getUniqueId() + ".end_home", false);
+
+                        if (slotDim.equals("NETHER") && !hasNether) {
+                            p.sendMessage(ChatColor.RED + "Du musst das Nether-Home Upgrade erst in /homeupgrades freischalten!");
+                            return;
+                        }
+                        if (slotDim.equals("END") && !hasEnd) {
+                            p.sendMessage(ChatColor.RED + "Du musst das End-Home Upgrade erst in /homeupgrades freischalten!");
+                            return;
+                        }
+                        if (slotDim.equals("OVERWORLD") && (i + 1) > unlockedHomes) {
+                            p.sendMessage(ChatColor.RED + "Du musst Overworld Home #" + (i + 1) + " erst in /homeupgrades freischalten!");
+                            return;
+                        }
+
                         if (!slotDim.equals(playerDim)) {
-                            p.sendMessage(ChatColor.RED + "Dieser Home-Slot ist für die Dimension " + slotDim + " konfiguriert! Du bist in " + playerDim + ".");
+                            p.sendMessage(ChatColor.RED + "Dieser Home-Slot ist für " + slotDim + " konfiguriert! Du bist in " + playerDim + ".");
                             return;
                         }
                         p.closeInventory();
@@ -1003,7 +1201,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     }
                     return;
                 } else if (slot == homeSlot - 9) {
-                    // Farbe/Muster ändern
                     String path = "homes." + p.getUniqueId().toString() + "." + i;
                     if (dataConfig.contains(path + ".name")) {
                         p.closeInventory();
@@ -1011,7 +1208,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     }
                     return;
                 } else if (slot == homeSlot + 9) {
-                    // Einstellungen
                     String path = "homes." + p.getUniqueId().toString() + "." + i;
                     if (dataConfig.contains(path + ".name")) {
                         p.closeInventory();
@@ -1036,7 +1232,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             ItemStack clicked = event.getCurrentItem();
             if (clicked == null || clicked.getType() == Material.AIR) {
-                // Prüfen ob Item reingezogen wurde
                 ItemStack cursor = event.getCursor();
                 if (cursor != null && cursor.getType().name().endsWith("_BANNER")) {
                     saveCustomBanner(p, cursor);
@@ -1047,7 +1242,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             if (clicked.getType().name().endsWith("_BANNER")) {
                 if (event.isShiftClick() && clicked.getItemMeta() != null && clicked.getItemMeta().hasLore()) {
-                    // Eigenes Banner löschen
                     List<ItemStack> customBanners = getCustomBanners(p);
                     for (int cb = 0; cb < customBanners.size(); cb++) {
                         if (customBanners.get(cb).isSimilar(clicked)) {
@@ -1059,7 +1253,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                     return;
                 }
 
-                // Banner ausgewählt -> Home speichern
                 String uuidStr = p.getUniqueId().toString();
                 String path = "homes." + uuidStr + "." + slotIndex;
                 dataConfig.set(path + ".name", "Home " + (slotIndex + 1));
@@ -1088,7 +1281,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
 
             String homeNameClean = title.replace(GUI_SETTINGS_PREFIX, "");
             String uuidStr = p.getUniqueId().toString();
-            int maxHomes = getConfig().getInt("max-homes", 3);
+            int maxHomes = getConfig().getInt("max-homes", 5);
             int targetIndex = -1;
 
             for (int i = 0; i < maxHomes; i++) {
@@ -1102,7 +1295,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
             if (targetIndex == -1) return;
 
             if (event.getRawSlot() == 11) {
-                // Main Home umschalten
                 for (int i = 0; i < maxHomes; i++) {
                     dataConfig.set("homes." + uuidStr + "." + i + ".isMain", false);
                 }
@@ -1111,7 +1303,6 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.5f);
                 openSettingsMenu(p, targetIndex);
             } else if (event.getRawSlot() == 15) {
-                // Löschen bestätigen öffnen
                 openConfirmDeleteMenu(p, targetIndex);
             }
             return;
@@ -1150,7 +1341,7 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 return;
             }
 
-            int maxHomes = getConfig().getInt("max-homes", 3);
+            int maxHomes = getConfig().getInt("max-homes", 5);
             int[] slots = getSlotsForAmount(maxHomes);
 
             for (int i = 0; i < slots.length; i++) {
@@ -1179,18 +1370,15 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
         String cmd = command.getName().toLowerCase();
 
         if (cmd.equals("home") || cmd.equals("homedelete")) {
-            if (args.length == 1) {
-                list.add("upgrade");
-                if (sender instanceof Player) {
-                    Player p = (Player) sender;
-                    String uuidStr = p.getUniqueId().toString();
-                    int maxHomes = getConfig().getInt("max-homes", 3);
-                    for (int i = 0; i < maxHomes; i++) {
-                        String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
-                        if (name != null) {
-                            list.add(name);
-                            list.add(String.valueOf(i + 1));
-                        }
+            if (args.length == 1 && sender instanceof Player) {
+                Player p = (Player) sender;
+                String uuidStr = p.getUniqueId().toString();
+                int maxHomes = getConfig().getInt("max-homes", 5);
+                for (int i = 0; i < maxHomes; i++) {
+                    String name = dataConfig.getString("homes." + uuidStr + "." + i + ".name");
+                    if (name != null) {
+                        list.add(name);
+                        list.add(String.valueOf(i + 1));
                     }
                 }
             }
@@ -1199,11 +1387,12 @@ public class BannerHomes extends JavaPlugin implements Listener, CommandExecutor
                 list.add("setmax");
                 list.add("cooldown");
             }
-        } else if (cmd.equals("settp")) {
-            if (args.length == 2 && sender.hasPermission("bannerhomes.admin")) {
-                list.add("30");
-                list.add("60");
-                list.add("120");
+        } else if (cmd.equals("settp") || cmd.equals("deltp")) {
+            if (args.length == 1 && sender.hasPermission("bannerhomes.admin")) {
+                if (dataConfig.contains("global_tps")) {
+                    Set<String> keys = dataConfig.getConfigurationSection("global_tps").getKeys(false);
+                    list.addAll(keys);
+                }
             }
         } else if (cmd.equals("tp")) {
             if (args.length == 1 && dataConfig.contains("global_tps")) {
